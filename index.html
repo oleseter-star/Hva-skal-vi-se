@@ -56,26 +56,59 @@ progress{width:100%;height:10px}
 body.nopaid .badge.paid{display:none}
 .fc .m progress{width:100%;height:6px;margin-top:6px}
 .chip.fr img{border-radius:6px;width:28px;height:40px}
+.dd{position:relative}
+#navDD{display:contents}
+#menuBtn{display:none}
+#filtDD .panel{display:none;position:absolute;right:0;top:calc(100% + 6px);background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px;z-index:30;min-width:230px;flex-direction:column;gap:8px}
+#filtDD.open .panel{display:flex}
+#filtDD .panel button{width:100%;text-align:left}
+#surpriseBtn{margin-left:auto}
+.brk{display:none}
+.dz{border:2px dashed var(--line);border-radius:12px;padding:22px;text-align:center;margin:12px 0}
+@media(max-width:760px){
+  header{gap:8px}
+  header h1{flex:1;margin:0;order:1}
+  #navDD{display:block;order:2}
+  #menuBtn{display:inline-block}
+  #nav{display:none;position:absolute;right:0;top:calc(100% + 6px);background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:8px;z-index:30;flex-direction:column;min-width:170px}
+  #navDD.open #nav{display:flex}
+  #nav button{text-align:left}
+  #filtDD{order:3}
+  .brk{display:block;flex-basis:100%;height:0;order:4}
+  #sf{order:5;margin-left:0;flex:1 1 0;max-width:none;min-width:0}
+  #surpriseBtn{order:6;margin-left:0}
+  .bar select{flex:1 1 140px;min-width:0}
+  .bar label{flex:1 1 150px}
+}
 @media(max-width:600px){.sheet{flex-direction:column}.sheet img{width:140px}}
 </style>
 </head>
 <body>
 <header>
   <h1>🎬 Hva skal vi se</h1>
-  <nav id="nav">
-    <button data-tab="discover" class="on">Discover</button>
-    <button data-tab="top">Top 100</button>
-    <button data-tab="actors">Actors</button>
-    <button data-tab="directors">Directors</button>
-    <button data-tab="franchises">Franchises</button>
-    <button data-tab="friend">Friend</button>
-    <button data-tab="lists">My lists</button>
-    <button data-tab="settings">Settings</button>
-  </nav>
+  <div class="dd" id="navDD">
+    <button id="menuBtn">☰ Menu</button>
+    <nav id="nav">
+      <button data-tab="discover" class="on">Discover</button>
+      <button data-tab="top">Top 100</button>
+      <button data-tab="actors">Actors</button>
+      <button data-tab="directors">Directors</button>
+      <button data-tab="franchises">Franchises</button>
+      <button data-tab="friend">Friend</button>
+      <button data-tab="lists">My lists</button>
+      <button data-tab="settings">Settings</button>
+    </nav>
+  </div>
   <form id="sf"><input type="text" id="q" placeholder="Search title, actor, director…" autocomplete="off"><div id="sug"></div></form>
-  <button id="paidBtn" title="Hide titles that cost extra (rent/buy)">$ Hide paid</button>
-  <button id="naBtn" title="Hide titles that are not on any of your services">✕ Hide unavailable</button>
-  <button class="primary" id="surpriseBtn" style="margin-left:auto">🎲 Surprise me</button>
+  <div class="dd" id="filtDD">
+    <button id="filtBtn">⚙ Filters</button>
+    <div class="panel">
+      <button id="paidBtn" title="Hide titles that cost extra (rent/buy)">$ Hide paid</button>
+      <button id="naBtn" title="Hide titles that are not on any of your services">✕ Hide unavailable</button>
+    </div>
+  </div>
+  <span class="brk"></span>
+  <button class="primary" id="surpriseBtn">🎲 Surprise me</button>
 </header>
 <main id="main"></main>
 <div class="modal" id="modal"><div class="sheet" id="sheet"></div></div>
@@ -196,20 +229,27 @@ async function renderTop(){
 function renderLists(){
   const sv=Object.values(seen).sort((a,b)=>(b.ts||0)-(a.ts||0)), wl=Object.values(want).sort((a,b)=>(b.ts||0)-(a.ts||0));
   $('#main').innerHTML=`
-  <div class="section"><h3>Letterboxd</h3>
-    <div class="mute">Export your data on letterboxd.com (Settings → Data → Export), unzip, and load the files here. No login or API needed.</div>
-    <p>watched.csv → seen list: <input type="file" id="fSeen" accept=".csv"></p>
-    <p>watchlist.csv → watchlist: <input type="file" id="fWant" accept=".csv"></p>
-    <p>ratings.csv also works in the first box. <span id="imp" class="mute"></span></p>
-    <progress id="impBar" value="0" max="1" style="display:none"></progress></div>
+  <div class="section"><h3>Letterboxd (your own export)</h3>
+    <div class="mute">Export your data on letterboxd.com (Settings → Data → Export your data), then drop everything here: the zip, the unzipped folder or loose files, original names. The app uses <b>watched.csv</b>, <b>ratings.csv</b> and <b>watchlist.csv</b> and ignores the rest. It only adds to your lists and never removes anything.</div>
+    <div id="mDrop" class="dz">Drop the export here<br><span class="mute">zip, folder or files</span><br>
+      <button id="mPickFiles" style="margin-top:8px">Choose files or zip…</button> <button id="mPickFolder">Choose folder…</button>
+      <input type="file" id="mFiles" multiple accept=".csv,.zip" hidden><input type="file" id="mFolder" webkitdirectory hidden></div>
+    <div id="mFound" class="mute"></div>
+    <progress id="impBar" value="0" max="1" style="display:none"></progress> <span id="imp" class="mute"></span></div>
   <div class="section"><h3>Seen (${sv.length}) <button id="exp" style="float:right">Export CSV</button></h3>
     <div class="grid" id="gSeen">${sv.map(m=>cardHTML(m)).join('')||'<span class="mute">Empty. Mark movies as seen or import from Letterboxd.</span>'}</div></div>
   <div class="section"><h3>Not interested (${Object.keys(skip).length})</h3>
     <div class="grid" id="gSkip">${Object.values(skip).sort((a,b)=>(b.ts||0)-(a.ts||0)).map(m=>cardHTML(m)).join('')||'<span class="mute">Empty. Use "Not interested" in a movie\'s details to hide it everywhere.</span>'}</div></div>
   <div class="section"><h3>Watchlist (${wl.length}) <button id="chk" style="float:right">Check what's streaming now</button></h3>
     <div class="grid" id="gWant">${wl.map(m=>cardHTML(m)).join('')||'<span class="mute">Empty.</span>'}</div></div>`;
-  $('#fSeen').onchange=e=>importCSV(e.target.files[0],'seen');
-  $('#fWant').onchange=e=>importCSV(e.target.files[0],'want');
+  bindDropZone(['mDrop','mFiles','mFolder','mPickFiles','mPickFolder'],async list=>{
+    try{
+      const r=await collectLB(list), labels={watched:'watched',ratings:'ratings',watchlist:'watchlist'};
+      const have=Object.keys(labels).filter(k=>r.out[k]);
+      $('#mFound').textContent=have.length?'Found: '+Object.keys(labels).map(k=>(r.out[k]?'✅ ':'▫️ ')+labels[k]).join(' · '):'No watched.csv, ratings.csv or watchlist.csv found in what you added.';
+      if(have.length) await importMine(r.out);
+    }catch(e){toast(e.message)}
+  });
   $('#exp').onclick=exportSeen;
   $('#chk').onclick=checkWatchlist;fillProviders($('#gWant'));
 }
@@ -217,11 +257,18 @@ let omActive=false, lastQ='', onlyMine=true, hidePaid=LS('hidePaid',false);
 function syncPaidBtn(){
   document.body.classList.toggle('nopaid',hidePaid);
   $('#paidBtn').classList.toggle('on',hidePaid);
+  syncFiltBtn();
   $('#paidBtn').textContent=hidePaid?'$ Paid hidden':'$ Hide paid';
 }
 let hideNA=LS('hideNA',false);
+function syncFiltBtn(){
+  const n=(hidePaid?1:0)+(hideNA?1:0);
+  $('#filtBtn').classList.toggle('on',n>0);
+  $('#filtBtn').textContent='⚙ Filters'+(n?' · '+n:'');
+}
 function syncNaBtn(){
   $('#naBtn').classList.toggle('on',hideNA);
+  syncFiltBtn();
   $('#naBtn').textContent=hideNA?'✕ Unavailable hidden':'✕ Hide unavailable';
 }
 $('#naBtn').onclick=()=>{hideNA=!hideNA;save('hideNA',hideNA);syncNaBtn();document.querySelectorAll('.card').forEach(applyOnlyMine)};
@@ -800,24 +847,33 @@ function parseCSV(t){
   if(f||row.length){row.push(f);rows.push(row)}
   return rows;
 }
-async function importCSV(file,target){
-  if(!file||!ready()) return;
-  const rows=parseCSV(await file.text()); const head=rows.shift().map(h=>h.trim().toLowerCase());
-  const iN=head.indexOf('name'), iY=head.indexOf('year');
-  if(iN<0) return toast('Not a Letterboxd CSV');
-  let i=0,done=0,hit=0,miss=[]; const bar=$('#impBar'); bar.style.display='block'; bar.max=rows.length;
-  const store=target==='seen'?seen:want;
-  const worker=async()=>{while(i<rows.length){const r=rows[i++];const name=r[iN],year=r[iY];
-    try{
-      let res=await api('/search/movie',{query:name,year});
-      if(!res.results.length) res=await api('/search/movie',{query:name});
-      const m=res.results[0];
-      if(m){store[m.id]={...slim(m),ts:Date.now()-done};if(target==='seen')delete want[m.id];hit++} else miss.push(name);
-    }catch{miss.push(name)}
-    done++;bar.value=done;$('#imp').textContent=`${done}/${rows.length} · matched ${hit}`}};
-  await Promise.all([worker(),worker(),worker(),worker(),worker()]);
-  save('seen',seen);save('want',want);
-  $('#imp').textContent=`Done: matched ${hit} of ${rows.length}.`+(miss.length?` Unmatched: ${miss.slice(0,10).join(', ')}${miss.length>10?'…':''}`:'');
+function bindDropZone(ids,take){
+  const [dz,fi,fo,pf,pd]=ids.map(i=>$('#'+i));
+  fi.onchange=e=>take([...e.target.files]); fo.onchange=e=>take([...e.target.files]);
+  pf.onclick=()=>fi.click(); pd.onclick=()=>fo.click();
+  ['dragenter','dragover'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.style.borderColor='var(--acc)'}));
+  dz.addEventListener('dragleave',()=>dz.style.borderColor='');
+  dz.addEventListener('drop',async e=>{e.preventDefault();dz.style.borderColor='';take(await filesFromDrop(e.dataTransfer))});
+}
+async function importMine(out){
+  const parts={};
+  for(const k of ['watched','ratings','watchlist']) if(out[k]) parts[k]=await readLB(out[k]);
+  const seenRows=[...(parts.watched||[]),...(parts.ratings||[])], wantRows=parts.watchlist||[];
+  const all=new Map(); [...seenRows,...wantRows].forEach(x=>all.set(x.name+'|'+x.year,x));
+  const todo=[...all.values()]; let i=0, done=0;
+  const bar=$('#impBar'); bar.style.display='block'; bar.max=todo.length; bar.value=0;
+  const worker=async()=>{while(i<todo.length){const x=todo[i++];
+    try{await lbMatch(x.name,x.year)}catch{}
+    done++; bar.value=done; $('#imp').textContent=`Matching films… ${done}/${todo.length}`}};
+  await Promise.all([...Array(6)].map(worker));
+  const get=x=>matchCache[x.name+'|'+x.year], missed=new Set(), stamp=Date.now();
+  let addedSeen=0, addedWant=0;
+  seenRows.forEach((x,idx)=>{const m=get(x);if(!m){missed.add(x.name+x.year);return}
+    if(!seen[m.id]){seen[m.id]={...m,ts:stamp-idx};addedSeen++} delete want[m.id]; delete skip[m.id]});
+  wantRows.forEach(x=>{const m=get(x);if(!m){missed.add(x.name+x.year);return}
+    if(!seen[m.id]&&!want[m.id]){want[m.id]={...m,ts:stamp};delete skip[m.id];addedWant++}});
+  saveAll(); safeSave('matchCache',matchCache);
+  $('#imp').textContent=`Done: ${addedSeen} added to seen, ${addedWant} to watchlist`+(missed.size?`, ${missed.size} couldn't be matched`:'')+'.';
   setTimeout(renderLists,2500);
 }
 function exportSeen(){
@@ -826,7 +882,12 @@ function exportSeen(){
 }
 
 /* ---------- boot ---------- */
-document.querySelectorAll('#nav button').forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
+function closeDD(except){document.querySelectorAll('.dd.open').forEach(d=>{if(d!==except)d.classList.remove('open')})}
+$('#menuBtn').onclick=e=>{e.stopPropagation();const d=$('#navDD');closeDD(d);d.classList.toggle('open')};
+$('#filtBtn').onclick=e=>{e.stopPropagation();const d=$('#filtDD');closeDD(d);d.classList.toggle('open')};
+document.addEventListener('click',e=>{if(!e.target.closest('.dd')) closeDD()});
+document.addEventListener('keydown',e=>{if(e.key==='Escape') closeDD()});
+document.querySelectorAll('#nav button').forEach(b=>b.onclick=()=>{closeDD();setTab(b.dataset.tab)});
 (async()=>{
   if(cfg.key){await loadProviders(false); try{if(!genres.length) genres=(await api('/genre/movie/list')).genres}catch{}}
   setTab(cfg.key?'discover':'settings');
