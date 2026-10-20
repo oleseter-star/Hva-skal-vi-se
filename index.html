@@ -60,6 +60,8 @@ body.nopaid .grid:not([data-search]) .badge.paid{display:none}   /* search resul
 .card .m .badge.paid{color:#f5b301}
 .card .m .badge.hit{color:#b9f5d8}
 .badge.na{background:#4a1f24;color:#ffb4b4}
+.plink{background:none;border:0;border-radius:0;padding:0;color:var(--acc);font:inherit;cursor:pointer;text-decoration:underline dotted}
+.credits{margin:6px 0;line-height:1.7}
 .card .m .badge.na{color:#ffb4b4}
 .card:focus-visible,button:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
 body.modal-open{overflow:hidden}
@@ -444,9 +446,19 @@ function ready(){
 
 /* ---------- details modal ---------- */
 const detailCache={};
+// Clickable director and cast names in the details popup; they open that person's filmography.
+const plink=(p,mode)=>`<button class="plink" data-pid="${p.id}" data-name="${esc(p.name)}" data-mode="${mode}">${esc(p.name)}</button>`;
+function creditsHTML(d){
+  const c=d.credits; if(!c) return '';
+  const ids=new Set(), dirs=(c.crew||[]).filter(p=>p.job==='Director'&&!ids.has(p.id)&&ids.add(p.id));
+  const cast=(c.cast||[]).slice().sort((a,b)=>a.order-b.order);
+  return (dirs.length?`<div class="credits"><span class="mute">Directed by</span> ${dirs.map(p=>plink(p,'crew')).join(', ')}</div>`:'')
+    +(cast.length?`<div class="credits" id="castLine"><span class="mute">Starring</span> ${cast.slice(0,10).map(p=>plink(p,'cast')).join(', ')}${cast.length>10?` <button class="plink" id="moreCast">+${Math.min(cast.length,30)-10} more</button>`:''}</div>`:'');
+}
+function bindPlinks(){$('#sheet').querySelectorAll('.plink[data-pid]').forEach(b=>b.onclick=()=>goPerson(b.dataset.pid,b.dataset.name,b.dataset.mode))}
 async function detail(id){
   if(detailCache[id]) return detailCache[id];
-  const d=await api('/movie/'+id,{append_to_response:'watch/providers'});
+  const d=await api('/movie/'+id,{append_to_response:'watch/providers,credits'});
   const no=d['watch/providers']?.results?.[REGION]||{};
   d._link=no.link; d._mine=mineOf(no); d._paid=paidOf(no);
   provCache[id]={t:Date.now(),l:d._mine,p:d._paid}; persistProv();
@@ -478,7 +490,7 @@ async function openModal(id,opts={}){
     $('#sheet').innerHTML=`${d.poster_path?`<img alt="" src="${IMG+d.poster_path}">`:''}
       <div><h2>${esc(d.title)} <span class="mute">(${yr(d)})</span></h2>
       <div class="mute">${esc((d.genres||[]).map(g=>g.name).join(', '))} · ${d.runtime||'?'} min · ★${(d.vote_average||0).toFixed(1)} (${d.vote_count} votes)</div>
-      ${d.tagline?`<p><i>${esc(d.tagline)}</i></p>`:''}<p>${esc(d.overview)}</p>
+      ${d.tagline?`<p><i>${esc(d.tagline)}</i></p>`:''}<p>${esc(d.overview)}</p>${creditsHTML(d)}
       <div>${d._mine.map(p=>`<span class="badge hit">${logoImg(p)} ${esc(p.name)} · included</span>`).join('')}${d._paid.map(paidTag).join('')}${(d._mine.length||d._paid.length)?'':'<span class="badge na">✕ Not available on your services</span>'}</div>
       <div class="acts">
         ${opts.again?'<button class="primary" id="again">🎲 Another</button>':''}
@@ -493,6 +505,8 @@ async function openModal(id,opts={}){
     $('#bWant').onclick=()=>{if(want[id]) delete want[id]; else {want[id]={...m,ts:Date.now()};delete skip[id]} saveAll();syncCard(id);openModal(id,opts);refreshView()};
     $('#bSkip').onclick=()=>{if(skip[id]) delete skip[id]; else {skip[id]={...m,ts:Date.now()};delete want[id]} saveAll();syncCard(id);openModal(id,opts);refreshView()};
     $('#bClose').onclick=closeModal;
+    bindPlinks();
+    const mc=$('#moreCast'); if(mc) mc.onclick=()=>{$('#castLine').innerHTML='<span class="mute">Starring</span> '+d.credits.cast.slice().sort((a,b)=>a.order-b.order).slice(0,30).map(p=>plink(p,'cast')).join(', ');bindPlinks()};
     if(d.belongs_to_collection) $('#bFran').onclick=()=>goFranchise(d.belongs_to_collection.id,d.belongs_to_collection.name);
   }catch(e){closeModal();toast(e.message)}
 }
