@@ -462,22 +462,41 @@ async function renderSearch(){
     fillProviders($('#grid'));
   }catch(e){toast(e.message)}
 }
+// Full filmography from TMDB's credits (not only what streams here): available titles first, then the rest.
+let personSeq=0; const creditsCache={};
 async function showPerson(id,name,mode){
-  omActive=false;
-  $('#main').innerHTML=`<h3 style="margin-top:0">${esc(name)} <span class="mute">· on your services</span></h3>
+  omActive=false; const token=++personSeq;
+  $('#main').innerHTML=`<h3 style="margin-top:0">${esc(name)} <span class="mute">· filmography</span></h3>
     <div class="bar"><button id="mCast" class="${mode==='cast'?'on':''}">As actor</button>
-    <button id="mCrew" class="${mode==='crew'?'on':''}">As director / crew</button>
+    <button id="mCrew" class="${mode==='crew'?'on':''}">As director</button>
     <button id="mBack">← Back</button></div>
-    <div class="grid" id="grid"><span class="mute">Loading…</span></div>`;
+    <div id="pStatus" class="mute" style="margin-bottom:10px"></div>
+    <div class="grid" id="grid"><span class="mute">Loading…</span></div><p id="pMore"></p>`;
   $('#mCast').onclick=()=>showPerson(id,name,'cast');
   $('#mCrew').onclick=()=>showPerson(id,name,'crew');
   $('#mBack').onclick=()=>{setTab(backTab);setTimeout(()=>scrollTo(0,backY),50)};
   try{
-    const base={watch_region:REGION,with_watch_providers:cfg.providers.join('|'),with_watch_monetization_types:'flatrate',include_adult:false,sort_by:'popularity.desc',[mode==='cast'?'with_cast':'with_crew']:id};
-    const rs=await Promise.all([1,2,3].map(p=>api('/discover/movie',{...base,page:p})));
-    const seenIds=new Set(), list=rs.flatMap(r=>r.results).filter(m=>!seenIds.has(m.id)&&seenIds.add(m.id));
-    $('#grid').innerHTML=list.map(m=>cardHTML(m)).join('')||`<span class="mute">Nothing with ${esc(name)} (${mode==='cast'?'as actor':'as director/crew'}) is streaming on your services right now.</span>`;
-    fillProviders($('#grid'));
+    const c=creditsCache[id]||(creditsCache[id]=await api(`/person/${id}/movie_credits`));
+    const raw=mode==='cast'?c.cast.filter(m=>!/^(self|himself|herself)\b|archive footage/i.test(m.character||'')):c.crew.filter(m=>m.job==='Director');
+    const ids=new Set(), films=raw.filter(m=>!ids.has(m.id)&&ids.add(m.id));
+    const need=films.map(m=>m.id).filter(i=>!cached(i));
+    if(need.length){
+      $('#pStatus').innerHTML=`Checking where ${need.length} films are streaming… <progress id="pav" value="0" max="${need.length}" style="width:200px"></progress>`;
+      await ensureAvail(need,d=>{const p=$('#pav');if(p)p.value=d});
+      if(token!==personSeq) return;
+    }
+    const rank=i=>{const x=cached(i);return x&&x.l.length?0:x&&x.p.length?1:2};
+    films.sort((a,b)=>rank(a.id)-rank(b.id)||(b.popularity||0)-(a.popularity||0));
+    const n=[0,0,0]; films.forEach(f=>n[rank(f.id)]++);
+    $('#pStatus').textContent=`${films.length} films · ${n[0]} free on your services`+(n[1]?` · ${n[1]} rent/buy`:'')+` · ${n[2]} not available`;
+    let shown=60;
+    const draw=()=>{
+      $('#grid').innerHTML=films.slice(0,shown).map(m=>cardHTML(m)).join('')||`<span class="mute">No ${mode==='cast'?'acting':'directing'} credits found.</span>`;
+      $('#pMore').innerHTML=films.length>shown?'<button id="pMoreBtn">Show more</button>':'';
+      if($('#pMoreBtn')) $('#pMoreBtn').onclick=()=>{shown+=60;draw()};
+      fillProviders($('#grid'));
+    };
+    draw();
   }catch(e){toast(e.message)}
 }
 
