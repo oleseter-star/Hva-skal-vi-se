@@ -3,9 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#0f1115">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🎬%3C/text%3E%3C/svg%3E">
 <title>Hva skal vi se</title>
 <style>
-:root{--bg:#0f1115;--panel:#181b22;--line:#272b35;--text:#e8eaf0;--mute:#8b93a5;--acc:#f5b301;--ok:#3ecf8e}
+:root{color-scheme:dark;--bg:#0f1115;--panel:#181b22;--line:#272b35;--text:#e8eaf0;--mute:#8b93a5;--acc:#f5b301;--ok:#3ecf8e}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,sans-serif}
 header{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--line);display:flex;gap:6px;align-items:center;padding:10px 14px;flex-wrap:wrap}
@@ -54,6 +56,11 @@ progress{width:100%;height:10px}
 .s-item small{color:var(--mute);display:block}
 .pc .m span{display:block}
 body.nopaid .badge.paid{display:none}
+.card .m .badge{font-size:11px;color:var(--text)}
+.card .m .badge.paid{color:#f5b301}
+.card .m .badge.hit{color:#b9f5d8}
+.card:focus-visible,button:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+body.modal-open{overflow:hidden}
 .fc .m progress{width:100%;height:6px;margin-top:6px}
 .chip.fr img{border-radius:6px;width:28px;height:40px}
 .dd{position:relative}
@@ -64,6 +71,7 @@ body.nopaid .badge.paid{display:none}
 #filtDD .panel button{width:100%;text-align:left}
 #surpriseBtn{margin-left:auto}
 .brk{display:none}
+.grid>.mute,.grid>p{grid-column:1/-1}
 .dz{border:2px dashed var(--line);border-radius:12px;padding:22px;text-align:center;margin:12px 0}
 @media(max-width:760px){
   header{gap:8px}
@@ -79,6 +87,7 @@ body.nopaid .badge.paid{display:none}
   #surpriseBtn{order:6;margin-left:0}
   .bar select{flex:1 1 140px;min-width:0}
   .bar label{flex:1 1 150px}
+  input[type=text],input[type=password],select{font-size:16px}
 }
 @media(max-width:600px){.sheet{flex-direction:column}.sheet img{width:140px}}
 </style>
@@ -117,24 +126,33 @@ body.nopaid .badge.paid{display:none}
 <script>
 const IMG='https://image.tmdb.org/t/p/w342', REGION='NO';
 const LS=(k,d)=>{try{return JSON.parse(localStorage.getItem(k))??d}catch{return d}};
-const save=(k,v)=>localStorage.setItem(k,JSON.stringify(v));
-let cfg=LS('cfg',{key:'',providers:[],provNames:{}});
+let storageWarned=false;
+const save=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v));return true}catch{if(!storageWarned){storageWarned=true;toast('Browser storage is full, some data may not be saved')}return false}};
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+let cfg=LS('cfg',{key:'',providers:[]});
 let seen=LS('seen',{}), want=LS('want',{}), skip=LS('skip',{});
 const hideSkipOn=()=>filters.hideSkip!==false;
 let filters=LS('filters',{genre:'',rating:'6.5',runtime:'',decade:'',sort:'popularity.desc',hideSeen:true});
-let genres=[], tab='discover', discoverPage=1, lastPick=null;
+let genres=[], tab='discover', discoverPage=1, lastPick=null, viewSeq=0;
 const $=s=>document.querySelector(s);
-const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const toast=t=>{const e=$('#toast');e.textContent=t;e.style.display='block';clearTimeout(toast.t);toast.t=setTimeout(()=>e.style.display='none',2500)};
 
+// TMDB calls with a timeout and retries (rate limit 429, server errors, flaky mobile networks).
 async function api(path,params={}){
   const u=new URL('https://api.themoviedb.org/3'+path);
   const headers={};
   if(cfg.key.length>40) headers.Authorization='Bearer '+cfg.key; else u.searchParams.set('api_key',cfg.key);
   for(const [k,v] of Object.entries(params)) if(v!==''&&v!=null) u.searchParams.set(k,v);
-  const r=await fetch(u,{headers});
-  if(!r.ok) throw new Error(r.status===401?'Invalid TMDB key':'TMDB error '+r.status);
-  return r.json();
+  for(let attempt=0;;attempt++){
+    let r;
+    try{r=await fetch(u,{headers,signal:AbortSignal.timeout?AbortSignal.timeout(15000):undefined})}
+    catch{if(attempt<2){await sleep(500*(attempt+1));continue} throw new Error('Network problem. Check your connection.')}
+    if(r.status===429&&attempt<4){await sleep((+r.headers.get('Retry-After')||1)*1000);continue}
+    if(r.status>=500&&attempt<2){await sleep(500*(attempt+1));continue}
+    if(!r.ok) throw new Error(r.status===401?'Invalid TMDB key':'TMDB error '+r.status);
+    return r.json();
+  }
 }
 
 /* ---------- discover params ---------- */
@@ -149,17 +167,17 @@ const yr=m=>(m.release_date||'').slice(0,4);
 const seenTest=id=>!!seen[id];
 
 /* ---------- rendering ---------- */
-function cardHTML(m,rank,badges){
+function cardHTML(m,rank){
   const s=seenTest(m.id), k=!s&&!!skip[m.id];
-  return `<div class="card ${s?'seen':''} ${k?'skipped':''}" data-id="${m.id}">
-    ${m.poster_path?`<img loading="lazy" src="${IMG+m.poster_path}">`:'<img>'}
+  return `<div class="card ${s?'seen':''} ${k?'skipped':''}" data-id="${m.id}" tabindex="0">
+    ${m.poster_path?`<img loading="lazy" alt="" src="${IMG+m.poster_path}">`:'<img alt="">'}
     ${s?'<i class="tick">✓</i>':k?'<i class="tick skip">⊘</i>':''}${rank?`<span class="rank">${rank}</span>`:''}
     <div class="m"><b>${esc(m.title)}</b><span>${yr(m)}${m.vote_average?' · ★'+m.vote_average.toFixed(1):''}</span>${friendTag(m.id)}<div class="pl" data-pl="${m.id}">${provHTML(m.id)}</div></div></div>`;
 }
 const slim=m=>({id:m.id,title:m.title,release_date:m.release_date,poster_path:m.poster_path,vote_average:m.vote_average});
 
 function setTab(t){
-  tab=t; omActive=false;
+  tab=t; viewSeq++;
   document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('on',b.dataset.tab===t));
   ({discover:renderDiscover,top:renderTop,lists:renderLists,settings:renderSettings,search:renderSearch,
     actors:()=>renderPeopleTab('actors'),directors:()=>renderPeopleTab('directors'),franchises:renderFranchises,friend:renderFriend})[t]();
@@ -185,35 +203,43 @@ function bindFilters(rerender){
 
 async function renderDiscover(){
   if(!ready()) return;
-  discoverPage=1;
-  $('#main').innerHTML=filterBar()+'<div class="grid" id="grid"></div><p><button id="more">Load more</button></p>';
+  const vs=++viewSeq; discoverPage=1;
+  $('#main').innerHTML=filterBar()+'<div class="grid" id="grid"><span class="mute">Loading…</span></div><p><button id="more">Load more</button></p>';
   bindFilters(renderDiscover);
-  $('#more').onclick=()=>loadDiscover();
-  loadDiscover();
+  $('#more').onclick=()=>loadDiscover(viewSeq);
+  loadDiscover(vs);
 }
-async function loadDiscover(){
+async function loadDiscover(vs){
   try{
     let shown=0, tries=0;
     while(shown<12 && tries<6){
       const r=await api('/discover/movie',discoverParams({page:discoverPage++}));
-      const list=r.results.filter(m=>!(filters.hideSeen&&seenTest(m.id))&&!(hideSkipOn()&&skip[m.id]));
-      $('#grid').insertAdjacentHTML('beforeend',list.map(m=>cardHTML(m)).join(''));
-      fillProviders($('#grid'));
+      if(vs!==viewSeq) return;
+      const g=$('#grid'), list=r.results.filter(m=>!(filters.hideSeen&&seenTest(m.id))&&!(hideSkipOn()&&skip[m.id]));
+      if(!g.querySelector('.card')) g.innerHTML='';
+      g.insertAdjacentHTML('beforeend',list.map(m=>cardHTML(m)).join(''));
+      fillProviders(g);
       shown+=list.length; tries++;
       if(discoverPage>r.total_pages){$('#more').style.display='none';break}
     }
-    if(!$('#grid').children.length) $('#grid').innerHTML='<p class="mute">Nothing matches. Loosen the filters.</p>';
+    const g=$('#grid'); if(!g.querySelector('.card')) g.innerHTML='<p class="mute">Nothing matches. Loosen the filters.</p>';
   }catch(e){toast(e.message)}
 }
 
+let topCache=null;
 async function renderTop(){
   if(!ready()) return;
+  const vs=++viewSeq;
   $('#main').innerHTML='<p class="mute">Loading…</p>';
   try{
-    const base={watch_region:REGION,with_watch_providers:cfg.providers.join('|'),with_watch_monetization_types:'flatrate',include_adult:false,'vote_count.gte':3000,sort_by:'vote_average.desc'};
-    const pages=await Promise.all([1,2,3,4,5].map(p=>api('/discover/movie',{...base,page:p})));
-    const list=pages.flatMap(r=>r.results).slice(0,100);
-    const n=list.filter(m=>seenTest(m.id)).length;
+    const key=cfg.providers.join();
+    if(!topCache||topCache.k!==key||Date.now()-topCache.t>6e5){
+      const base={watch_region:REGION,with_watch_providers:cfg.providers.join('|'),with_watch_monetization_types:'flatrate',include_adult:false,'vote_count.gte':3000,sort_by:'vote_average.desc'};
+      const pages=await Promise.all([1,2,3,4,5].map(p=>api('/discover/movie',{...base,page:p})));
+      topCache={k:key,t:Date.now(),list:pages.flatMap(r=>r.results).slice(0,100)};
+    }
+    if(vs!==viewSeq) return;
+    const list=topCache.list, n=list.filter(m=>seenTest(m.id)).length;
     $('#main').innerHTML=`<div class="section"><h3>Top ${list.length} on your services</h3>
       <div class="mute">Ranked by TMDB user rating (min. 3000 votes) among movies streaming on your Norwegian services. You've seen ${n} of ${list.length}.</div>
       <progress value="${n}" max="${list.length}"></progress>
@@ -226,8 +252,18 @@ async function renderTop(){
   }catch(e){toast(e.message)}
 }
 
+const byTs=(a,b)=>(b.ts||0)-(a.ts||0), listLimit={seen:60,skip:60,want:60}, GID={seen:'gSeen',skip:'gSkip',want:'gWant'};
+let wantSorted=false;
 function renderLists(){
-  const sv=Object.values(seen).sort((a,b)=>(b.ts||0)-(a.ts||0)), wl=Object.values(want).sort((a,b)=>(b.ts||0)-(a.ts||0));
+  const wantScore=id=>{const c=cached(id);return c?(c.l.length?2:c.p.length?1:0):0};
+  const lists={seen:Object.values(seen).sort(byTs),skip:Object.values(skip).sort(byTs),want:Object.values(want).sort(byTs)};
+  if(wantSorted) lists.want.sort((a,b)=>wantScore(b.id)-wantScore(a.id));
+  const section=(key,title,extra,empty)=>{
+    const items=lists[key], n=listLimit[key];
+    return `<div class="section"><h3>${title} (${items.length}) ${extra}</h3>
+      <div class="grid" id="${GID[key]}">${items.slice(0,n).map(m=>cardHTML(m)).join('')||`<span class="mute">${empty}</span>`}</div>
+      ${items.length>n?`<p><button data-more="${key}">Show more (${items.length-n} left)</button></p>`:''}</div>`;
+  };
   $('#main').innerHTML=`
   <div class="section"><h3>Letterboxd (your own export)</h3>
     <div class="mute">Export your data on letterboxd.com (Settings → Data → Export your data), then drop everything here: the zip, the unzipped folder or loose files, original names. The app uses <b>watched.csv</b>, <b>ratings.csv</b> and <b>watchlist.csv</b> and ignores the rest. It only adds to your lists and never removes anything.</div>
@@ -235,13 +271,10 @@ function renderLists(){
       <button id="mPickFiles" style="margin-top:8px">Choose files or zip…</button> <button id="mPickFolder">Choose folder…</button>
       <input type="file" id="mFiles" multiple accept=".csv,.zip" hidden><input type="file" id="mFolder" webkitdirectory hidden></div>
     <div id="mFound" class="mute"></div>
-    <progress id="impBar" value="0" max="1" style="display:none"></progress> <span id="imp" class="mute"></span></div>
-  <div class="section"><h3>Seen (${sv.length}) <button id="exp" style="float:right">Export CSV</button></h3>
-    <div class="grid" id="gSeen">${sv.map(m=>cardHTML(m)).join('')||'<span class="mute">Empty. Mark movies as seen or import from Letterboxd.</span>'}</div></div>
-  <div class="section"><h3>Not interested (${Object.keys(skip).length})</h3>
-    <div class="grid" id="gSkip">${Object.values(skip).sort((a,b)=>(b.ts||0)-(a.ts||0)).map(m=>cardHTML(m)).join('')||'<span class="mute">Empty. Use "Not interested" in a movie\'s details to hide it everywhere.</span>'}</div></div>
-  <div class="section"><h3>Watchlist (${wl.length}) <button id="chk" style="float:right">Check what's streaming now</button></h3>
-    <div class="grid" id="gWant">${wl.map(m=>cardHTML(m)).join('')||'<span class="mute">Empty.</span>'}</div></div>`;
+    <progress id="impBar" value="0" max="1" style="display:none"></progress> <span id="imp" class="mute"></span></div>`
+    +section('seen','Seen','<button id="exp" style="float:right">Export CSV</button>','Empty. Mark movies as seen or import from Letterboxd.')
+    +section('skip','Not interested','','Empty. Use "Not interested" in a movie\'s details to hide it everywhere.')
+    +section('want','Watchlist','<button id="chk" style="float:right">Check what\'s streaming now</button>','Empty.');
   bindDropZone(['mDrop','mFiles','mFolder','mPickFiles','mPickFolder'],async list=>{
     try{
       const r=await collectLB(list), labels={watched:'watched',ratings:'ratings',watchlist:'watchlist'};
@@ -251,9 +284,11 @@ function renderLists(){
     }catch(e){toast(e.message)}
   });
   $('#exp').onclick=exportSeen;
-  $('#chk').onclick=checkWatchlist;fillProviders($('#gWant'));
+  $('#chk').onclick=checkWatchlist;
+  document.querySelectorAll('[data-more]').forEach(b=>b.onclick=()=>{listLimit[b.dataset.more]+=60;const y=scrollY;renderLists();scrollTo(0,y)});
+  fillProviders($('#gWant'));
 }
-let omActive=false, lastQ='', onlyMine=true, hidePaid=LS('hidePaid',false);
+let lastQ='', hidePaid=LS('hidePaid',false);
 function syncPaidBtn(){
   document.body.classList.toggle('nopaid',hidePaid);
   $('#paidBtn').classList.toggle('on',hidePaid);
@@ -275,7 +310,9 @@ $('#naBtn').onclick=()=>{hideNA=!hideNA;save('hideNA',hideNA);syncNaBtn();docume
 syncNaBtn();
 $('#paidBtn').onclick=()=>{hidePaid=!hidePaid;save('hidePaid',hidePaid);syncPaidBtn();document.querySelectorAll('.card').forEach(applyOnlyMine)};
 syncPaidBtn();
-const provCache=LS('provCache3',{}), TTL=864e5;
+const provCache=LS('provCache3',{}), TTL=864e5, provInflight={};
+for(const k in provCache){const c=provCache[k];if(!(c&&c.p&&Date.now()-c.t<TTL)) delete provCache[k]}   // drop expired entries
+let provSaveT; const persistProv=()=>{clearTimeout(provSaveT);provSaveT=setTimeout(()=>save('provCache3',provCache),800)};
 const short=n=>({'Amazon Prime Video':'Prime','Amazon Prime Video with Ads':'Prime'}[n]||n);
 const mineOf=no=>(no.flatrate||[]).filter(p=>cfg.providers.includes(p.provider_id)).map(p=>({id:p.provider_id,name:p.provider_name,logo:p.logo_path}));
 function paidOf(no){
@@ -301,29 +338,37 @@ function applyOnlyMine(card){
   }
   card.style.display=hide?'none':'';
 }
+// One request per film at a time, shared by everything that asks for it.
+function fetchProv(id){
+  const c=cached(id); if(c) return Promise.resolve(c);
+  return provInflight[id]??=api(`/movie/${id}/watch/providers`)
+    .then(r=>{const no=r.results?.[REGION]||{};return provCache[id]={t:Date.now(),l:mineOf(no),p:paidOf(no)}})
+    .finally(()=>{delete provInflight[id]});
+}
 async function fillProviders(root=document){
   const els=[...root.querySelectorAll('.pl')].filter(e=>!e.dataset.done);
   let i=0;
   const worker=async()=>{while(i<els.length){
     const el=els[i++], id=el.dataset.pl;
-    if(!cached(id)){
-      try{const r=await api(`/movie/${id}/watch/providers`);const no=r.results?.[REGION]||{};provCache[id]={t:Date.now(),l:mineOf(no),p:paidOf(no)}}catch{continue}
-    }
+    try{await fetchProv(id)}catch{continue}
     el.innerHTML=provHTML(id);el.dataset.done=1;applyOnlyMine(el.closest('.card'));
   }};
-  await Promise.all([worker(),worker(),worker(),worker(),worker(),worker()]);
-  save('provCache3',provCache);
+  await Promise.all([...Array(6)].map(worker));
+  persistProv();
+}
+async function ensureAvail(ids,onProg){
+  let i=0, done=0;
+  const worker=async()=>{while(i<ids.length){const id=ids[i++];try{await fetchProv(id)}catch{} onProg(++done)}};
+  await Promise.all([...Array(8)].map(worker));
+  persistProv();
 }
 async function checkWatchlist(){
   if(!ready()) return;
-  Object.keys(want).forEach(id=>delete provCache[id]);
-  $('#chk').textContent='Checking…';
-  $('#gWant').querySelectorAll('.pl').forEach(e=>{delete e.dataset.done});
-  await fillProviders($('#gWant'));
-  const score=id=>{const c=cached(id);return c?(c.l.length?2:c.p.length?1:0):0};
-  const order=Object.values(want).sort((a,b)=>score(b.id)-score(a.id));
-  $('#gWant').innerHTML=order.map(m=>cardHTML(m)).join('');
-  $('#chk').textContent="Check what's streaming now";
+  const vs=viewSeq, ids=Object.keys(want), btn=$('#chk');
+  ids.forEach(id=>delete provCache[id]);
+  await ensureAvail(ids,d=>{if(btn)btn.textContent=`Checking ${d}/${ids.length}…`});
+  if(vs!==viewSeq||tab!=='lists') return;
+  wantSorted=true; listLimit.want=60; renderLists();
 }
 
 function renderSettings(){
@@ -336,7 +381,7 @@ function renderSettings(){
     <div class="mute">Stored only in this browser.</div>
     <p><input type="password" id="key" style="width:100%" value="${esc(cfg.key)}" placeholder="TMDB key or token"></p>
     <button class="primary" id="saveKey">Save &amp; load services</button></div>
-    <div class="section"><h3>Your services (Norway)</h3><div class="checks" id="provs" class="mute">Save the key first.</div></div>
+    <div class="section"><h3>Your services (Norway)</h3><div class="checks mute" id="provs">Save the key first.</div></div>
     <div class="section"><h3>Data</h3><button id="wipe">Clear seen, not interested &amp; watchlist</button>
     <p class="mute">Streaming data and ratings from TMDB (availability by JustWatch). This product uses the TMDB API but is not endorsed or certified by TMDB.</p></div>`;
   $('#saveKey').onclick=async()=>{cfg.key=$('#key').value.trim();save('cfg',cfg);await loadProviders(true);renderProviders()};
@@ -346,7 +391,10 @@ function renderSettings(){
 function renderProviders(){
   const list=cfg.allProv||[];
   $('#provs').innerHTML=list.map(p=>`<label><input type="checkbox" value="${p.provider_id}" ${cfg.providers.includes(p.provider_id)?'checked':''}> ${esc(p.provider_name)}</label>`).join('')||'<span class="mute">No services found.</span>';
-  $('#provs').onchange=()=>{cfg.providers=[...document.querySelectorAll('#provs input:checked')].map(i=>+i.value);save('cfg',cfg)};
+  $('#provs').onchange=()=>{
+    cfg.providers=[...document.querySelectorAll('#provs input:checked')].map(i=>+i.value);save('cfg',cfg);
+    for(const k in provCache) delete provCache[k]; for(const k in detailCache) delete detailCache[k]; topCache=null; persistProv();   // availability depends on the chosen services
+  };
 }
 async function loadProviders(force){
   if(!cfg.key) return;
@@ -354,11 +402,11 @@ async function loadProviders(force){
     if(!force&&cfg.allProv?.length) return;
     const r=await api('/watch/providers/movie',{watch_region:REGION});
     cfg.allProv=r.results.filter(p=>/netflix|prime video|viaplay|^max$|hbo/i.test(p.provider_name));
-    const want=/^(netflix|amazon prime video|viaplay|max|hbo max)$/i;
-    cfg.providers=cfg.allProv.filter(p=>want.test(p.provider_name)).map(p=>p.provider_id);
-    cfg.provNames=Object.fromEntries(r.results.map(p=>[p.provider_id,p.provider_name]));
+    const wanted=/^(netflix|amazon prime video|viaplay|max|hbo max)$/i;
+    const kept=(cfg.providers||[]).filter(id=>cfg.allProv.some(p=>p.provider_id===id));   // keep the user's own selection when re-saving the key
+    cfg.providers=kept.length?kept:cfg.allProv.filter(p=>wanted.test(p.provider_name)).map(p=>p.provider_id);
     save('cfg',cfg);
-    const g=await api('/genre/movie/list'); genres=g.genres;
+    genres=(await api('/genre/movie/list')).genres;
     toast('Services loaded');
   }catch(e){toast(e.message)}
 }
@@ -368,21 +416,39 @@ function ready(){
 }
 
 /* ---------- details modal ---------- */
+const detailCache={};
 async function detail(id){
+  if(detailCache[id]) return detailCache[id];
   const d=await api('/movie/'+id,{append_to_response:'watch/providers'});
   const no=d['watch/providers']?.results?.[REGION]||{};
-  d._link=no.link;
-  d._mine=mineOf(no); d._paid=paidOf(no);
-  return d;
+  d._link=no.link; d._mine=mineOf(no); d._paid=paidOf(no);
+  provCache[id]={t:Date.now(),l:d._mine,p:d._paid}; persistProv();
+  return detailCache[id]=d;
+}
+// The modal gets its own history entry, so the phone's Back button closes it instead of leaving the page.
+let modalOpen=false, skipPop=false;
+function showModalUI(){
+  if(!modalOpen){
+    const cur=history.state||{};
+    if(cur.t!=='modal'){history.replaceState({...cur,y:scrollY},'');history.pushState({t:'modal'},'')}
+    modalOpen=true;
+  }
+  $('#modal').classList.add('open'); document.body.classList.add('modal-open');
+}
+function hideModalUI(){$('#modal').classList.remove('open');document.body.classList.remove('modal-open')}
+function closeModal(){
+  if(!modalOpen) return;
+  hideModalUI(); modalOpen=false;
+  if(history.state&&history.state.t==='modal'){skipPop=true;history.back()}
 }
 async function openModal(id,opts={}){
-  $('#modal').classList.add('open');
-  $('#sheet').innerHTML='<p class="mute">Loading…</p>';
+  showModalUI();
+  if(!detailCache[id]) $('#sheet').innerHTML='<p class="mute">Loading…</p>';
   try{
     const d=await detail(id);
-    provCache[id]={t:Date.now(),l:d._mine,p:d._paid}; save('provCache3',provCache);
+    if(!modalOpen) return;
     const m=slim(d), s=!!seen[id], w=!!want[id], k=!!skip[id];
-    $('#sheet').innerHTML=`${d.poster_path?`<img src="${IMG+d.poster_path}">`:''}
+    $('#sheet').innerHTML=`${d.poster_path?`<img alt="" src="${IMG+d.poster_path}">`:''}
       <div><h2>${esc(d.title)} <span class="mute">(${yr(d)})</span></h2>
       <div class="mute">${esc((d.genres||[]).map(g=>g.name).join(', '))} · ${d.runtime||'?'} min · ★${(d.vote_average||0).toFixed(1)} (${d.vote_count} votes)</div>
       ${d.tagline?`<p><i>${esc(d.tagline)}</i></p>`:''}<p>${esc(d.overview)}</p>
@@ -392,7 +458,7 @@ async function openModal(id,opts={}){
         <button id="bSeen">${s?'✓ Seen (undo)':'Mark as seen'}</button>
         <button id="bWant">${w?'★ On watchlist (remove)':'+ Watchlist'}</button>
         <button id="bSkip">${k?'⊘ Not interested (undo)':'⊘ Not interested'}</button>
-        ${d._link?`<a href="${d._link}" target="_blank" rel="noopener"><button>Open on JustWatch</button></a>`:''}
+        ${/^https:\/\//.test(d._link||'')?`<a href="${esc(d._link)}" target="_blank" rel="noopener"><button>Open on JustWatch</button></a>`:''}
         ${d.belongs_to_collection?`<button id="bFran">🎬 ${esc(d.belongs_to_collection.name.replace(/ Collection$/,''))} franchise</button>`:''}
         <button id="bClose">Close</button></div></div>`;
     if(opts.again) $('#again').onclick=opts.againFn||surprise;
@@ -400,10 +466,10 @@ async function openModal(id,opts={}){
     $('#bWant').onclick=()=>{if(want[id]) delete want[id]; else {want[id]={...m,ts:Date.now()};delete skip[id]} saveAll();syncCard(id);openModal(id,opts);refreshView()};
     $('#bSkip').onclick=()=>{if(skip[id]) delete skip[id]; else {skip[id]={...m,ts:Date.now()};delete want[id]} saveAll();syncCard(id);openModal(id,opts);refreshView()};
     $('#bClose').onclick=closeModal;
-    if(d.belongs_to_collection) $('#bFran').onclick=()=>{closeModal();goFranchise(d.belongs_to_collection.id,d.belongs_to_collection.name)};
+    if(d.belongs_to_collection) $('#bFran').onclick=()=>goFranchise(d.belongs_to_collection.id,d.belongs_to_collection.name);
   }catch(e){closeModal();toast(e.message)}
 }
-const closeModal=()=>$('#modal').classList.remove('open');
+
 function refreshView(){ if(tab==='lists') renderLists(); }
 function saveAll(){save('seen',seen);save('want',want);save('skip',skip)}
 // keep cards on screen in step with seen / not-interested changes; hide them where the filters say so
@@ -420,6 +486,9 @@ function syncCard(id){
 }
 $('#modal').onclick=e=>{if(e.target.id==='modal')closeModal()};
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal()});
+$('#main').addEventListener('keydown',e=>{
+  if((e.key==='Enter'||e.key===' ')&&e.target.classList&&e.target.classList.contains('card')){e.preventDefault();e.target.click()}
+});
 $('#main').addEventListener('click',e=>{
   const fr=e.target.closest('.fr,.fc'); if(fr) return goFranchise(fr.dataset.cid,fr.dataset.name);
   const ch=e.target.closest('.chip'); if(ch) return goPerson(ch.dataset.pid,ch.dataset.name,ch.dataset.dep==='Directing'?'crew':'cast');
@@ -430,7 +499,7 @@ $('#main').addEventListener('click',e=>{
 /* ---------- surprise ---------- */
 async function surprise(){
   if(!ready()) return;
-  $('#modal').classList.add('open'); $('#sheet').innerHTML='<p class="mute">Rolling…</p>';
+  showModalUI(); $('#sheet').innerHTML='<p class="mute">Rolling…</p>';
   try{
     const first=await api('/discover/movie',discoverParams({page:1}));
     const pages=Math.max(1,Math.min(first.total_pages,30));
@@ -446,16 +515,17 @@ async function surprise(){
 $('#surpriseBtn').onclick=surprise;
 
 /* ---------- search (title, actor, director) ---------- */
-$('#sf').onsubmit=e=>{e.preventDefault();const q=$('#q').value.trim();if(q){lastQ=q;setTab('search')}};
+$('#sf').onsubmit=e=>{e.preventDefault();const q=$('#q').value.trim();if(q) go({k:'tab',t:'search',q})};
 async function renderSearch(){
   if(!ready()) return;
-  omActive=true;
+  const vs=++viewSeq;
   document.querySelectorAll('#nav button').forEach(b=>b.classList.remove('on'));
   $('#main').innerHTML=`<h3 style="margin-top:0">Results for “${esc(lastQ)}”</h3>
     <div class="people" id="people"></div>
         <div class="grid" id="grid"><span class="mute">Searching…</span></div>`;
   try{
     const [m,p,c]=await Promise.all([api('/search/movie',{query:lastQ,include_adult:false}),api('/search/person',{query:lastQ,include_adult:false}),api('/search/collection',{query:lastQ}).catch(()=>({results:[]}))]);
+    if(vs!==viewSeq) return;
     const ppl=p.results.filter(x=>['Acting','Directing'].includes(x.known_for_department)).slice(0,6);
     $('#people').innerHTML=c.results.slice(0,4).map(x=>`<button class="chip fr" data-cid="${x.id}" data-name="${esc(x.name)}">${x.poster_path?`<img src="https://image.tmdb.org/t/p/w92${x.poster_path}">`:''}<span>${esc(x.name.replace(/ Collection$/,''))}<br><small class="mute">Franchise</small></span></button>`).join('')+ppl.map(x=>`<button class="chip" data-pid="${x.id}" data-dep="${x.known_for_department}" data-name="${esc(x.name)}">${x.profile_path?`<img src="https://image.tmdb.org/t/p/w185${x.profile_path}">`:''}<span>${esc(x.name)}<br><small class="mute">${x.known_for_department==='Directing'?'Director':'Actor'}</small></span></button>`).join('');
     $('#grid').innerHTML=m.results.map(x=>cardHTML(x)).join('')||'<span class="mute">No title matches.</span>';
@@ -463,9 +533,9 @@ async function renderSearch(){
   }catch(e){toast(e.message)}
 }
 // Full filmography from TMDB's credits (not only what streams here): available titles first, then the rest.
-let personSeq=0; const creditsCache={};
+const creditsCache={};
 async function showPerson(id,name,mode){
-  omActive=false; const token=++personSeq;
+  const token=++viewSeq;
   $('#main').innerHTML=`<h3 style="margin-top:0">${esc(name)} <span class="mute">· filmography</span></h3>
     <div class="bar"><button id="mCast" class="${mode==='cast'?'on':''}">As actor</button>
     <button id="mCrew" class="${mode==='crew'?'on':''}">As director</button>
@@ -474,16 +544,17 @@ async function showPerson(id,name,mode){
     <div class="grid" id="grid"><span class="mute">Loading…</span></div><p id="pMore"></p>`;
   $('#mCast').onclick=()=>showPerson(id,name,'cast');
   $('#mCrew').onclick=()=>showPerson(id,name,'crew');
-  $('#mBack').onclick=()=>{setTab(backTab);setTimeout(()=>scrollTo(0,backY),50)};
+  $('#mBack').onclick=()=>history.back();
   try{
     const c=creditsCache[id]||(creditsCache[id]=await api(`/person/${id}/movie_credits`));
+    if(token!==viewSeq) return;
     const raw=mode==='cast'?c.cast.filter(m=>!/^(self|himself|herself)\b|archive footage/i.test(m.character||'')):c.crew.filter(m=>m.job==='Director');
     const ids=new Set(), films=raw.filter(m=>!ids.has(m.id)&&ids.add(m.id));
     const need=films.map(m=>m.id).filter(i=>!cached(i));
     if(need.length){
       $('#pStatus').innerHTML=`Checking where ${need.length} films are streaming… <progress id="pav" value="0" max="${need.length}" style="width:200px"></progress>`;
       await ensureAvail(need,d=>{const p=$('#pav');if(p)p.value=d});
-      if(token!==personSeq) return;
+      if(token!==viewSeq) return;
     }
     const rank=i=>{const x=cached(i);return x&&x.l.length?0:x&&x.p.length?1:2};
     films.sort((a,b)=>rank(a.id)-rank(b.id)||(b.popularity||0)-(a.popularity||0));
@@ -501,8 +572,27 @@ async function showPerson(id,name,mode){
 }
 
 /* ---------- person navigation ---------- */
-let backTab='discover', backY=0;
-function goPerson(id,name,mode){backTab=tab;backY=scrollY;showPerson(id,name,mode);scrollTo(0,0)}
+history.scrollRestoration='manual';
+function render(v){
+  if(v.k==='person') showPerson(v.id,v.name,v.mode);
+  else if(v.k==='franchise') showFranchise(v.id,v.name);
+  else {if(v.q!==undefined) lastQ=v.q; setTab(v.t)}
+}
+// User-initiated navigation: remember the scroll position, add a history entry, draw the new view.
+function go(v){
+  const cur=history.state||{};
+  if(cur.t==='modal'){hideModalUI();modalOpen=false;history.replaceState({v,y:0},'')}   // an open modal's entry becomes the new page
+  else if(JSON.stringify(cur.v)!==JSON.stringify(v)){history.replaceState({...cur,y:scrollY},'');history.pushState({v,y:0},'')}
+  render(v); scrollTo(0,0);
+}
+const goPerson=(id,name,mode)=>go({k:'person',id,name,mode});
+const goFranchise=(id,name)=>go({k:'franchise',id,name});
+addEventListener('popstate',e=>{
+  if(skipPop){skipPop=false;return}
+  if(modalOpen){hideModalUI();modalOpen=false;return}   // Back closes an open modal
+  const st=e.state; if(!st||st.t==='modal'||!st.v) return;
+  render(st.v); setTimeout(()=>scrollTo(0,st.y||0),60);
+});
 
 /* ---------- search suggestions ---------- */
 let sugT, sugItems=[], sugIdx=-1, sugSeq=0;
@@ -550,31 +640,38 @@ $('#sf').addEventListener('submit',hideSug);
 // Built from the most acclaimed movies on TMDB (min 5000 votes): who directed / starred in the most of them.
 let peopleCache=LS('peopleCache',null);
 const pshown={actors:40,directors:40};
+function buildFailed(e,retry){
+  $('#main').innerHTML=`<div class="section"><h3>Couldn't build the list</h3><p class="mute">${esc(e.message)}</p><button id="retry" class="primary">Try again</button></div>`;
+  $('#retry').onclick=retry;
+}
 async function buildPeople(onProgress){
   const pages=await Promise.all([...Array(14).keys()].map(i=>api('/discover/movie',{include_adult:false,sort_by:'vote_average.desc','vote_count.gte':5000,page:i+1}).catch(()=>({results:[]}))));
   const seenM=new Set(), movies=pages.flatMap(r=>r.results).filter(m=>!seenM.has(m.id)&&seenM.add(m.id));
-  const dir={}, act={}; let i=0, done=0;
+  if(movies.length<100) throw new Error('TMDB did not answer properly, try again in a moment');
+  const dir={}, act={}; let i=0, done=0, fail=0;
   const add=(o,p,m)=>{const x=o[p.id]??={id:p.id,name:p.name,profile:p.profile_path,n:0,v:0};x.n++;x.v+=m.vote_average;if(!x.profile&&p.profile_path)x.profile=p.profile_path};
   const worker=async()=>{while(i<movies.length){const m=movies[i++];
     try{const c=await api(`/movie/${m.id}/credits`);
       c.crew.filter(p=>p.job==='Director').forEach(p=>add(dir,p,m));
       c.cast.filter(p=>p.order<6).forEach(p=>add(act,p,m));
-    }catch{}
+    }catch{fail++}
     onProgress(++done,movies.length)}};
   await Promise.all([...Array(8)].map(worker));
+  if(fail>movies.length*0.1) throw new Error('Some lookups failed, try again in a moment');
   const top=o=>Object.values(o).sort((a,b)=>b.n-a.n||b.v-a.v).slice(0,150);
   return {t:Date.now(),directors:top(dir),actors:top(act),films:movies.length};
 }
 async function renderPeopleTab(kind){
   if(!ready()) return;
+  const vs=++viewSeq;
   const label=kind==='actors'?'Actors':'Directors';
   if(!peopleCache||Date.now()-peopleCache.t>12096e5){
     $('#main').innerHTML=`<div class="section"><h3>Building the ${label.toLowerCase()} list…</h3><div class="mute">One-time setup (takes about 10–20 seconds). It looks at the most acclaimed movies and counts who is in them.</div><progress id="pp" value="0" max="1"></progress></div>`;
     try{
       peopleCache=await buildPeople((d,n)=>{const p=$('#pp');if(p){p.max=n;p.value=d}});
       save('peopleCache',peopleCache);
-    }catch(e){toast(e.message);return}
-    if(tab!==kind) return;
+    }catch(e){if(vs===viewSeq) buildFailed(e,()=>renderPeopleTab(kind));return}
+    if(vs!==viewSeq) return;
   }
   const list=peopleCache[kind], mode=kind==='actors'?'cast':'crew', n=Math.min(pshown[kind],list.length);
   $('#main').innerHTML=`<div class="section"><h3>${label}</h3><div class="mute">Ranked by how many of the ${peopleCache.films} most acclaimed movies on TMDB they ${kind==='actors'?'star in (top-billed)':'directed'}. Click one to see their movies on your services.</div></div>
@@ -591,30 +688,31 @@ const FRANCHISES=['Star Wars','Harry Potter','The Lord of the Rings','The Hobbit
 let franchiseCache=LS('franchiseCache',null);
 let frPrefs=LS('frPrefs',{sort:'curated',hideDone:false});
 const niceName=n=>String(n||'').replace(/ Collection$/,'');
-function goFranchise(id,name){backTab=tab;backY=scrollY;showFranchise(id,name);scrollTo(0,0)}
 async function buildFranchises(onProgress){
-  const out=new Array(FRANCHISES.length); let i=0, done=0;
+  const out=new Array(FRANCHISES.length); let i=0, done=0, fail=0;
   const worker=async()=>{while(i<FRANCHISES.length){
     const idx=i++;
     try{
       const r=await api('/search/collection',{query:FRANCHISES[idx]}); const c=r.results[0];
       if(c){const d=await api('/collection/'+c.id); const parts=d.parts.filter(p=>p.release_date);
         if(parts.length>=2) out[idx]={i:idx,id:c.id,name:d.name,poster:d.poster_path||c.poster_path,ids:parts.map(p=>p.id)}}
-    }catch{}
+    }catch{fail++}
     onProgress(++done,FRANCHISES.length)}};
   await Promise.all([...Array(6)].map(worker));
+  if(fail>FRANCHISES.length*0.25) throw new Error('Some lookups failed, try again in a moment');
   const seenC=new Set();
   return {v:1,t:Date.now(),list:out.filter(f=>f&&!seenC.has(f.id)&&seenC.add(f.id))};
 }
 async function renderFranchises(){
   if(!ready()) return;
+  const vs=++viewSeq;
   if(!franchiseCache||franchiseCache.v!==1||Date.now()-franchiseCache.t>2592e6){
     $('#main').innerHTML=`<div class="section"><h3>Building the franchise list…</h3><div class="mute">One-time setup (roughly 15–30 seconds).</div><progress id="pp" value="0" max="1"></progress></div>`;
     try{
       franchiseCache=await buildFranchises((d,n)=>{const p=$('#pp');if(p){p.max=n;p.value=d}});
       save('franchiseCache',franchiseCache);
-    }catch(e){toast(e.message);return}
-    if(tab!=='franchises') return;
+    }catch(e){if(vs===viewSeq) buildFailed(e,renderFranchises);return}
+    if(vs!==viewSeq) return;
   }
   let list=franchiseCache.list.map(f=>({...f,n:f.ids.length,s:f.ids.filter(id=>seen[id]).length}));
   if(frPrefs.hideDone) list=list.filter(f=>f.s<f.n);
@@ -632,13 +730,14 @@ async function renderFranchises(){
   $('#frDone').onchange=e=>{frPrefs.hideDone=e.target.checked;save('frPrefs',frPrefs);renderFranchises()};
 }
 async function showFranchise(id,name){
-  omActive=false;
+  const vs=++viewSeq;
   $('#main').innerHTML=`<h3 style="margin-top:0">${esc(niceName(name))} <span class="mute">· franchise</span></h3>
     <div class="bar"><button id="mBack">← Back</button><span class="mute" id="frInfo"></span></div>
     <div class="grid" id="grid"><span class="mute">Loading…</span></div>`;
-  $('#mBack').onclick=()=>{setTab(backTab);setTimeout(()=>scrollTo(0,backY),50)};
+  $('#mBack').onclick=()=>history.back();
   try{
     const d=await api('/collection/'+id);
+    if(vs!==viewSeq) return;
     const parts=d.parts.slice().sort((a,b)=>(a.release_date||'9999').localeCompare(b.release_date||'9999'));
     const s=parts.filter(m=>seen[m.id]).length, next=parts.find(m=>!seen[m.id]&&!skip[m.id]);
     $('#frInfo').textContent=`${s} of ${parts.length} seen`+(next&&s<parts.length?` · next up: ${next.title}`:'')+(s===parts.length?' · finished 🎉':'');
@@ -648,9 +747,9 @@ async function showFranchise(id,name){
 }
 
 /* ---------- Friend: someone else's Letterboxd export ---------- */
-let friend=LS('friend',null), matchCache=LS('matchCache',{});
+let friend=LS('friend',null), matchCache=LS('matchCache',{}), friendSets=null, drawSeq=0;
+const fsets=()=>friendSets||(friendSets={liked:new Set(friend.liked||[]),wl:new Set(friend.watchlist)});
 let fp=LS('fp',{kind:'watchlist',sort:'rating',hideSeen:true,hideSkip:true,onlyMine:true}), fShown=60, fImport=false, fList=[];
-const safeSave=(k,v)=>{try{save(k,v);return true}catch{toast('Browser storage is full');return false}};
 function navFriendLabel(){const b=document.querySelector('#nav [data-tab="friend"]');if(b)b.textContent=friend?friend.name:'Friend'}
 navFriendLabel();
 async function lbMatch(name,year){
@@ -661,22 +760,26 @@ async function lbMatch(name,year){
   return matchCache[key]=m?slim(m):0;
 }
 async function readLB(file){
-  const rows=parseCSV(await file.text()); const head=rows.shift().map(h=>h.trim().toLowerCase());
+  let text=await file.text(); if(text.charCodeAt(0)===0xFEFF) text=text.slice(1);
+  const rows=parseCSV(text); const head=rows.shift().map(h=>h.trim().toLowerCase());
   const iN=head.indexOf('name'), iY=head.indexOf('year'), iR=head.indexOf('rating');
   if(iN<0) throw new Error('Not a Letterboxd CSV: '+file.name);
   return rows.map(r=>({name:r[iN],year:r[iY],rating:iR>=0?parseFloat(r[iR]):null})).filter(x=>x.name);
+}
+async function matchAll(rows,bar,label){
+  let i=0, done=0; bar.style.display='block'; bar.max=rows.length; bar.value=0;
+  const worker=async()=>{while(i<rows.length){const x=rows[i++];
+    try{await lbMatch(x.name,x.year)}catch{}
+    done++; bar.value=done; label.textContent=`Matching films… ${done}/${rows.length}`}};
+  await Promise.all([...Array(6)].map(worker));
 }
 async function importFriend(files,name){
   const parts={};
   for(const k of ['watchlist','ratings','liked','watched']) if(files[k]) parts[k]=await readLB(files[k]);
   if(!Object.keys(parts).length) throw new Error('Choose at least one file');
   const all=new Map(); Object.values(parts).flat().forEach(x=>all.set(x.name+'|'+x.year,x));
-  const todo=[...all.values()]; let i=0, done=0;
-  const bar=$('#fbar'); bar.style.display='block'; bar.max=todo.length; bar.value=0;
-  const worker=async()=>{while(i<todo.length){const x=todo[i++];
-    try{await lbMatch(x.name,x.year)}catch{}
-    done++; bar.value=done; $('#fimp').textContent=`Matching films… ${done}/${todo.length}`}};
-  await Promise.all([...Array(6)].map(worker));
+  const todo=[...all.values()];
+  await matchAll(todo,$('#fbar'),$('#fimp'));
   const get=x=>matchCache[x.name+'|'+x.year], old=friend||{};
   const f={name,updated:Date.now(),watchlist:old.watchlist||[],ratings:old.ratings||{},liked:old.liked||[],watched:old.watched||[],movies:{...(old.movies||{})}};
   const keep=(x)=>{const m=get(x);if(m)f.movies[m.id]=m;return m};
@@ -685,7 +788,7 @@ async function importFriend(files,name){
   if(parts.liked) f.liked=parts.liked.map(keep).filter(Boolean).map(m=>m.id);
   if(parts.watched) f.watched=parts.watched.map(keep).filter(Boolean).map(m=>m.id);
   f.watched=[...new Set([...f.watched,...Object.keys(f.ratings).map(Number),...f.liked])];
-  friend=f; safeSave('friend',f); safeSave('matchCache',matchCache);
+  friend=f; friendSets=null; save('friend',f); save('matchCache',matchCache);
   const miss=todo.filter(x=>!get(x)).length;
   if(miss) toast(`${miss} film${miss>1?'s':''} couldn't be matched`);
 }
@@ -741,7 +844,7 @@ async function collectLB(list){
 function friendImportHTML(){
   return `<div class="section"><h3>${friend?'Update':'Add a friend from Letterboxd'}</h3>
     <div class="mute">Ask your friend to open letterboxd.com on a computer → Settings → Data → <b>Export your data</b> and send you the zip. Then just throw everything in here: the zip itself, the unzipped folder, or loose files, with their original names. The app picks out <b>watchlist.csv</b>, <b>ratings.csv</b>, <b>watched.csv</b> and <b>likes/films.csv</b> (♥ hearts) and ignores the rest. Any one of them is enough. Matching a long list takes a minute or two the first time and is remembered after that.</div>
-    <div id="fDrop" style="border:2px dashed var(--line);border-radius:12px;padding:22px;text-align:center;margin:12px 0">
+    <div id="fDrop" class="dz">
       Drop the export here<br><span class="mute">zip, folder or files</span><br>
       <button id="fPickFiles" style="margin-top:8px">Choose files or zip…</button> <button id="fPickFolder">Choose folder…</button>
       <input type="file" id="fFiles" multiple accept=".csv,.zip" hidden><input type="file" id="fFolder" webkitdirectory hidden>
@@ -764,20 +867,13 @@ function friendIds(k){
 function picksScore(id,likedSet,wlSet){const r=friend.ratings[id]||0;return (r>=4.5?3:r>=4?2:r>=3.5?1:0)+(likedSet.has(id)?2:0)+(wlSet.has(id)?1:0)}
 function friendTag(id){
   if(!friend||tab==='friend') return '';
-  const r=friend.ratings[id], k=(friend.liked||[]).includes(id), w=friend.watchlist.includes(id);
-  const txt=r>=4?'★'+r:k?'♥':w?'wants':'';
+  const r=friend.ratings[id], S=fsets();
+  const txt=r>=4?'★'+r:S.liked.has(+id)?'♥':S.wl.has(+id)?'wants':'';
   return txt?`<span class="badge" style="background:#3a2f55" title="${esc(friend.name)}'s list">${esc(friend.name)} ${txt}</span>`:'';
-}
-async function ensureAvail(ids,onProg){
-  let i=0, done=0;
-  const worker=async()=>{while(i<ids.length){const id=ids[i++];
-    try{const r=await api(`/movie/${id}/watch/providers`);const no=r.results?.[REGION]||{};provCache[id]={t:Date.now(),l:mineOf(no),p:paidOf(no)}}catch{}
-    onProg(++done)}};
-  await Promise.all([...Array(8)].map(worker));
-  save('provCache3',provCache);
 }
 function renderFriend(){
   if(!ready()) return;
+  viewSeq++;
   if(!friend||fImport){
     $('#main').innerHTML=friendImportHTML();
     fPending={};
@@ -789,14 +885,7 @@ function renderFriend(){
           :'No watchlist.csv, ratings.csv, watched.csv or likes/films.csv found in what you added.';
       }catch(e){toast(e.message)}
     };
-    $('#fFiles').onchange=e=>takeFiles([...e.target.files]);
-    $('#fFolder').onchange=e=>takeFiles([...e.target.files]);
-    $('#fPickFiles').onclick=()=>$('#fFiles').click();
-    $('#fPickFolder').onclick=()=>$('#fFolder').click();
-    const dz=$('#fDrop');
-    ['dragenter','dragover'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.style.borderColor='var(--acc)'}));
-    dz.addEventListener('dragleave',()=>dz.style.borderColor='');
-    dz.addEventListener('drop',async e=>{e.preventDefault();dz.style.borderColor='';takeFiles(await filesFromDrop(e.dataTransfer))});
+    bindDropZone(['fDrop','fFiles','fFolder','fPickFiles','fPickFolder'],takeFiles);
     $('#fGo').onclick=async()=>{
       const files=fPending;
       if(!Object.keys(files).length) return toast('Add the export first');
@@ -824,21 +913,22 @@ function renderFriend(){
   if(!okKind[fp.kind]){fp.kind='picks';$('#fpKind').value='picks'}
   $('#fPick').onclick=pickFriend;
   $('#fEdit').onclick=()=>{fImport=true;renderFriend()};
-  $('#fDel').onclick=()=>{if(confirm(`Remove ${friend.name}'s data?`)){friend=null;localStorage.removeItem('friend');navFriendLabel();renderFriend()}};
+  $('#fDel').onclick=()=>{if(confirm(`Remove ${friend.name}'s data?`)){friend=null;friendSets=null;localStorage.removeItem('friend');navFriendLabel();renderFriend()}};
   drawFriend();
 }
 async function drawFriend(){
+  const ds=++drawSeq, vs=viewSeq;
   const ids=[...new Set(friendIds(fp.kind))], st=()=>$('#fStatus');
   const need=ids.filter(id=>!cached(id));
   if(need.length){
     st().innerHTML=`Checking where ${need.length} films are streaming (first time only, then remembered for a day)… <progress id="fav" value="0" max="${need.length}" style="width:220px"></progress>`;
     await ensureAvail(need,d=>{const p=$('#fav');if(p)p.value=d});
-    if(tab!=='friend'||!st()) return;
+    if(ds!==drawSeq||vs!==viewSeq||!st()) return;
   }
   const has=c=>c&&(c.l.length||(!hidePaid&&c.p.length));
   const list=ids.filter(id=>friend.movies[id]&&!(fp.hideSeen&&seen[id])&&!(fp.hideSkip&&skip[id])&&!(fp.onlyMine&&!has(cached(id))));
   const mv=id=>friend.movies[id], r=id=>friend.ratings[id]||0, va=id=>mv(id).vote_average||0;
-  const likedSet=new Set(friend.liked||[]), wlSet=new Set(friend.watchlist);
+  const {liked:likedSet,wl:wlSet}=fsets();
   if(fp.sort==='rating'&&fp.kind==='picks'){const sc=new Map(list.map(id=>[id,picksScore(id,likedSet,wlSet)]));list.sort((a,b)=>sc.get(b)-sc.get(a)||r(b)-r(a)||va(b)-va(a))}
   else if(fp.sort==='rating') list.sort((a,b)=>r(b)-r(a)||(likedSet.has(b)-likedSet.has(a))||va(b)-va(a));
   else if(fp.sort==='tmdb') list.sort((a,b)=>va(b)-va(a));
@@ -879,25 +969,21 @@ async function importMine(out){
   for(const k of ['watched','ratings','watchlist']) if(out[k]) parts[k]=await readLB(out[k]);
   const seenRows=[...(parts.watched||[]),...(parts.ratings||[])], wantRows=parts.watchlist||[];
   const all=new Map(); [...seenRows,...wantRows].forEach(x=>all.set(x.name+'|'+x.year,x));
-  const todo=[...all.values()]; let i=0, done=0;
-  const bar=$('#impBar'); bar.style.display='block'; bar.max=todo.length; bar.value=0;
-  const worker=async()=>{while(i<todo.length){const x=todo[i++];
-    try{await lbMatch(x.name,x.year)}catch{}
-    done++; bar.value=done; $('#imp').textContent=`Matching films… ${done}/${todo.length}`}};
-  await Promise.all([...Array(6)].map(worker));
+  const todo=[...all.values()];
+  await matchAll(todo,$('#impBar'),$('#imp'));
   const get=x=>matchCache[x.name+'|'+x.year], missed=new Set(), stamp=Date.now();
   let addedSeen=0, addedWant=0;
   seenRows.forEach((x,idx)=>{const m=get(x);if(!m){missed.add(x.name+x.year);return}
     if(!seen[m.id]){seen[m.id]={...m,ts:stamp-idx};addedSeen++} delete want[m.id]; delete skip[m.id]});
   wantRows.forEach(x=>{const m=get(x);if(!m){missed.add(x.name+x.year);return}
     if(!seen[m.id]&&!want[m.id]){want[m.id]={...m,ts:stamp};delete skip[m.id];addedWant++}});
-  saveAll(); safeSave('matchCache',matchCache);
+  saveAll(); save('matchCache',matchCache);
   $('#imp').textContent=`Done: ${addedSeen} added to seen, ${addedWant} to watchlist`+(missed.size?`, ${missed.size} couldn't be matched`:'')+'.';
   setTimeout(renderLists,2500);
 }
 function exportSeen(){
   const csv='Name,Year,TMDB id\n'+Object.values(seen).map(m=>`"${m.title.replace(/"/g,'""')}",${yr(m)},${m.id}`).join('\n');
-  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='seen.csv';a.click();
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='seen.csv';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);
 }
 
 /* ---------- boot ---------- */
@@ -906,10 +992,12 @@ $('#menuBtn').onclick=e=>{e.stopPropagation();const d=$('#navDD');closeDD(d);d.c
 $('#filtBtn').onclick=e=>{e.stopPropagation();const d=$('#filtDD');closeDD(d);d.classList.toggle('open')};
 document.addEventListener('click',e=>{if(!e.target.closest('.dd')) closeDD()});
 document.addEventListener('keydown',e=>{if(e.key==='Escape') closeDD()});
-document.querySelectorAll('#nav button').forEach(b=>b.onclick=()=>{closeDD();setTab(b.dataset.tab)});
+document.querySelectorAll('#nav button').forEach(b=>b.onclick=()=>{closeDD();go({k:'tab',t:b.dataset.tab})});
 (async()=>{
   if(cfg.key){await loadProviders(false); try{if(!genres.length) genres=(await api('/genre/movie/list')).genres}catch{}}
-  setTab(cfg.key?'discover':'settings');
+  const start={k:'tab',t:cfg.key?'discover':'settings'};
+  history.replaceState({v:start,y:0},'');
+  render(start);
 })();
 </script>
 </body>
