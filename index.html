@@ -124,7 +124,7 @@ body.modal-open{overflow:hidden}
   <button class="primary" id="surpriseBtn">🎲 Surprise me</button>
 </header>
 <main id="main"></main>
-<div class="modal" id="modal"><div class="sheet" id="sheet"></div></div>
+<div class="modal" id="modal" role="dialog" aria-modal="true" aria-label="Movie details"><div class="sheet" id="sheet"></div></div>
 <div id="toast"></div>
 
 <script>
@@ -411,9 +411,15 @@ function renderSettings(){
     <p><input type="password" id="key" style="width:100%" value="${esc(cfg.key)}" placeholder="TMDB key or token"></p>
     <button class="primary" id="saveKey">Save &amp; load services</button></div>
     <div class="section"><h3>Your services (Norway)</h3><div class="checks mute" id="provs">Save the key first.</div></div>
+    <div class="section"><h3>Backup</h3>
+      <div class="mute">Everything lives in this browser only. A backup file holds your seen, watchlist and not-interested lists, your friend's data and your filter choices (not your TMDB key). Use it to move to a new phone, to copy your lists between devices, or as a safety net. Note: on iPhone the Home Screen app keeps its own separate storage from Safari.</div>
+      <p><button id="bkSave">⬇ Back up my data</button> <button id="bkLoad">⬆ Restore from backup</button><input type="file" id="bkFile" accept=".json,application/json" hidden></p></div>
     <div class="section"><h3>Data</h3><button id="wipe">Clear seen, not interested &amp; watchlist</button>
     <p class="mute">Streaming data and ratings from TMDB (availability by JustWatch). This product uses the TMDB API but is not endorsed or certified by TMDB.</p></div>`;
   $('#saveKey').onclick=async()=>{cfg.key=$('#key').value.trim();save('cfg',cfg);await loadProviders(true);renderProviders()};
+  $('#bkSave').onclick=exportBackup;
+  $('#bkLoad').onclick=()=>$('#bkFile').click();
+  $('#bkFile').onchange=async e=>{const f=e.target.files[0]; if(f){try{await importBackup(f)}catch(err){toast(err.message)}}};
   $('#wipe').onclick=()=>{if(confirm('Delete all seen/watchlist data?')){seen={};want={};skip={};saveAll();toast('Cleared')}};
   if(cfg.key) renderProviders();
 }
@@ -465,27 +471,31 @@ async function detail(id){
   return detailCache[id]=d;
 }
 // The modal gets its own history entry, so the phone's Back button closes it instead of leaving the page.
-let modalOpen=false, skipPop=false;
+let modalOpen=false, skipPop=false, modalSeq=0, lastFocus=null;
 function showModalUI(){
   if(!modalOpen){
     const cur=history.state||{};
     if(cur.t!=='modal'){history.replaceState({...cur,y:scrollY},'');history.pushState({t:'modal'},'')}
-    modalOpen=true;
+    modalOpen=true; lastFocus=document.activeElement;
   }
   $('#modal').classList.add('open'); document.body.classList.add('modal-open');
 }
-function hideModalUI(){$('#modal').classList.remove('open');document.body.classList.remove('modal-open')}
+function hideModalUI(){
+  $('#modal').classList.remove('open');document.body.classList.remove('modal-open');
+  if(lastFocus&&lastFocus.focus){try{lastFocus.focus({preventScroll:true})}catch{} lastFocus=null}
+}
 function closeModal(){
   if(!modalOpen) return;
   hideModalUI(); modalOpen=false;
   if(history.state&&history.state.t==='modal'){skipPop=true;history.back()}
 }
 async function openModal(id,opts={}){
+  const my=++modalSeq;
   showModalUI();
   if(!detailCache[id]) $('#sheet').innerHTML='<p class="mute">Loading…</p>';
   try{
     const d=await detail(id);
-    if(!modalOpen) return;
+    if(!modalOpen||my!==modalSeq) return;
     const m=slim(d), s=!!seen[id], w=!!want[id], k=!!skip[id];
     $('#sheet').innerHTML=`${d.poster_path?`<img alt="" src="${IMG+d.poster_path}">`:''}
       <div><h2>${esc(d.title)} <span class="mute">(${yr(d)})</span></h2>
@@ -508,7 +518,8 @@ async function openModal(id,opts={}){
     bindPlinks();
     const mc=$('#moreCast'); if(mc) mc.onclick=()=>{$('#castLine').innerHTML='<span class="mute">Starring</span> '+d.credits.cast.slice().sort((a,b)=>a.order-b.order).slice(0,30).map(p=>plink(p,'cast')).join(', ');bindPlinks()};
     if(d.belongs_to_collection) $('#bFran').onclick=()=>goFranchise(d.belongs_to_collection.id,d.belongs_to_collection.name);
-  }catch(e){closeModal();toast(e.message)}
+    $('#sheet').tabIndex=-1; if(!$('#sheet').contains(document.activeElement)) $('#sheet').focus({preventScroll:true});
+  }catch(e){if(my===modalSeq){closeModal();toast(e.message)}}
 }
 
 function refreshView(){ if(tab==='lists') renderLists(); }
@@ -570,7 +581,7 @@ async function renderSearch(){
     const [m,p,c]=await Promise.all([api('/search/movie',{query:lastQ,include_adult:false}),api('/search/person',{query:lastQ,include_adult:false}),api('/search/collection',{query:lastQ}).catch(()=>({results:[]}))]);
     if(vs!==viewSeq) return;
     const ppl=p.results.filter(x=>['Acting','Directing'].includes(x.known_for_department)).slice(0,6);
-    $('#people').innerHTML=c.results.slice(0,4).map(x=>`<button class="chip fr" data-cid="${x.id}" data-name="${esc(x.name)}">${x.poster_path?`<img src="https://image.tmdb.org/t/p/w92${x.poster_path}">`:''}<span>${esc(x.name.replace(/ Collection$/,''))}<br><small class="mute">Franchise</small></span></button>`).join('')+ppl.map(x=>`<button class="chip" data-pid="${x.id}" data-dep="${x.known_for_department}" data-name="${esc(x.name)}">${x.profile_path?`<img src="https://image.tmdb.org/t/p/w185${x.profile_path}">`:''}<span>${esc(x.name)}<br><small class="mute">${x.known_for_department==='Directing'?'Director':'Actor'}</small></span></button>`).join('');
+    $('#people').innerHTML=c.results.slice(0,4).map(x=>`<button class="chip fr" data-cid="${x.id}" data-name="${esc(x.name)}">${x.poster_path?`<img alt="" src="https://image.tmdb.org/t/p/w92${x.poster_path}">`:''}<span>${esc(x.name.replace(/ Collection$/,''))}<br><small class="mute">Franchise</small></span></button>`).join('')+ppl.map(x=>`<button class="chip" data-pid="${x.id}" data-dep="${x.known_for_department}" data-name="${esc(x.name)}">${x.profile_path?`<img alt="" src="https://image.tmdb.org/t/p/w185${x.profile_path}">`:''}<span>${esc(x.name)}<br><small class="mute">${x.known_for_department==='Directing'?'Director':'Actor'}</small></span></button>`).join('');
     const drawSearch=()=>{
       const k=sortPrefs.search||'rel', list=k==='rel'?m.results:m.results.slice().sort((a,b)=>cmp[k](a,b)||cmp.pop(a,b));
       $('#grid').innerHTML=list.map(x=>cardHTML(x)).join('')||'<span class="mute">No title matches.</span>';
@@ -668,9 +679,9 @@ async function suggest(q){
     if(seq!==sugSeq) return;
     sugItems=[...cr.results.slice(0,2).map(c=>({...c,media_type:'collection'})),...r.results.filter(x=>x.media_type==='movie'||(x.media_type==='person'&&['Acting','Directing'].includes(x.known_for_department)))].slice(0,9);
     sugIdx=-1;
-    $('#sug').innerHTML=sugItems.map((x,i)=>x.media_type==='collection'?`<div class="s-item" data-i="${i}">${x.poster_path?`<img src="https://image.tmdb.org/t/p/w92${x.poster_path}">`:'<img>'}<span>${esc(x.name.replace(/ Collection$/,''))}<small>Franchise</small></span></div>`:x.media_type==='movie'
-      ?`<div class="s-item" data-i="${i}">${x.poster_path?`<img src="https://image.tmdb.org/t/p/w92${x.poster_path}">`:'<img>'}<span>${esc(x.title)}<small>Movie${yr(x)?' · '+yr(x):''}</small></span></div>`
-      :`<div class="s-item person" data-i="${i}">${x.profile_path?`<img src="https://image.tmdb.org/t/p/w185${x.profile_path}">`:'<img>'}<span>${esc(x.name)}<small>${x.known_for_department==='Directing'?'Director':'Actor'}</small></span></div>`).join('');
+    $('#sug').innerHTML=sugItems.map((x,i)=>x.media_type==='collection'?`<div class="s-item" data-i="${i}">${x.poster_path?`<img alt="" src="https://image.tmdb.org/t/p/w92${x.poster_path}">`:'<img alt="">'}<span>${esc(x.name.replace(/ Collection$/,''))}<small>Franchise</small></span></div>`:x.media_type==='movie'
+      ?`<div class="s-item" data-i="${i}">${x.poster_path?`<img alt="" src="https://image.tmdb.org/t/p/w92${x.poster_path}">`:'<img alt="">'}<span>${esc(x.title)}<small>Movie${yr(x)?' · '+yr(x):''}</small></span></div>`
+      :`<div class="s-item person" data-i="${i}">${x.profile_path?`<img alt="" src="https://image.tmdb.org/t/p/w185${x.profile_path}">`:'<img alt="">'}<span>${esc(x.name)}<small>${x.known_for_department==='Directing'?'Director':'Actor'}</small></span></div>`).join('');
     $('#sug').style.display=sugItems.length?'block':'none';
   }catch{}
 }
@@ -681,7 +692,10 @@ function pickSug(i){
   else if(x.media_type==='movie') openModal(x.id);
   else goPerson(x.id,x.name,x.known_for_department==='Directing'?'crew':'cast');
 }
-$('#sug').addEventListener('mousedown',e=>{const it=e.target.closest('.s-item');if(it){e.preventDefault();pickSug(+it.dataset.i)}});
+let sugDown=false;   // a finger/mouse is on the list: don't let the input's blur close it before the tap lands
+$('#sug').addEventListener('pointerdown',()=>{sugDown=true});
+['pointerup','pointercancel'].forEach(ev=>document.addEventListener(ev,()=>setTimeout(()=>{sugDown=false},0)));
+$('#sug').addEventListener('click',e=>{const it=e.target.closest('.s-item');if(it) pickSug(+it.dataset.i)});
 $('#q').addEventListener('keydown',e=>{
   const open=$('#sug').style.display==='block';
   if(e.key==='Escape') return hideSug();
@@ -692,7 +706,7 @@ $('#q').addEventListener('keydown',e=>{
     [...$('#sug').children].forEach((c,i)=>c.classList.toggle('act',i===sugIdx));
   } else if(e.key==='Enter'&&sugIdx>=0){e.preventDefault();pickSug(sugIdx)}
 });
-$('#q').addEventListener('blur',()=>setTimeout(hideSug,150));
+$('#q').addEventListener('blur',()=>{if(!sugDown) setTimeout(hideSug,150)});
 $('#sf').addEventListener('submit',hideSug);
 
 /* ---------- Actors / Directors tabs ---------- */
@@ -735,7 +749,7 @@ async function renderPeopleTab(kind){
   const list=peopleCache[kind], mode=kind==='actors'?'cast':'crew', n=Math.min(pshown[kind],list.length);
   $('#main').innerHTML=`<div class="section"><h3>${label}</h3><div class="mute">Ranked by how many of the ${peopleCache.films} most acclaimed movies on TMDB they ${kind==='actors'?'star in (top-billed)':'directed'}. Click one to see their movies on your services.</div></div>
     <div class="grid" id="pgrid">${list.slice(0,n).map((p,i)=>`<div class="card pc" data-pid="${p.id}" data-name="${esc(p.name)}" data-mode="${mode}">
-      ${p.profile?`<img loading="lazy" src="https://image.tmdb.org/t/p/w185${p.profile}">`:'<img>'}<span class="rank">${i+1}</span>
+      ${p.profile?`<img loading="lazy" alt="" src="https://image.tmdb.org/t/p/w185${p.profile}">`:'<img alt="">'}<span class="rank">${i+1}</span>
       <div class="m"><b>${esc(p.name)}</b><span>${p.n} top-rated film${p.n>1?'s':''}</span></div></div>`).join('')}</div>
     ${n<list.length?'<p><button id="morePeople">Show more</button></p>':''}`;
   const mb=$('#morePeople'); if(mb) mb.onclick=()=>{pshown[kind]+=40;renderPeopleTab(kind);};
@@ -747,12 +761,20 @@ const FRANCHISES=['Star Wars','Harry Potter','The Lord of the Rings','The Hobbit
 let franchiseCache=LS('franchiseCache',null);
 let frPrefs=LS('frPrefs',{sort:'curated',hideDone:false});
 const niceName=n=>String(n||'').replace(/ Collection$/,'');
+const STOPWORDS=new Set(['the','and','of','a','on','s','collection']);
+const nameTokens=s=>String(s).toLowerCase().split(/[^a-z0-9]+/).filter(w=>w&&!STOPWORDS.has(w));
+// exact name first, otherwise the first result that contains every word we asked for; never just "the first result"
+function pickCollection(results,query){
+  const q=nameTokens(query); if(!q.length) return null;
+  return results.find(x=>{const h=nameTokens(x.name);return h.length===q.length&&q.every(w=>h.includes(w))})
+      ||results.find(x=>{const h=new Set(nameTokens(x.name));return q.every(w=>h.has(w))})||null;
+}
 async function buildFranchises(onProgress){
   const out=new Array(FRANCHISES.length); let i=0, done=0, fail=0;
   const worker=async()=>{while(i<FRANCHISES.length){
     const idx=i++;
     try{
-      const r=await api('/search/collection',{query:FRANCHISES[idx]}); const c=r.results[0];
+      const r=await api('/search/collection',{query:FRANCHISES[idx]}); const c=pickCollection(r.results,FRANCHISES[idx]);
       if(c){const d=await api('/collection/'+c.id); const parts=d.parts.filter(p=>p.release_date);
         if(parts.length>=2) out[idx]={i:idx,id:c.id,name:d.name,poster:d.poster_path||c.poster_path,ids:parts.map(p=>p.id)}}
     }catch{fail++}
@@ -760,12 +782,12 @@ async function buildFranchises(onProgress){
   await Promise.all([...Array(6)].map(worker));
   if(fail>FRANCHISES.length*0.25) throw new Error('Some lookups failed, try again in a moment');
   const seenC=new Set();
-  return {v:1,t:Date.now(),list:out.filter(f=>f&&!seenC.has(f.id)&&seenC.add(f.id))};
+  return {v:2,t:Date.now(),list:out.filter(f=>f&&!seenC.has(f.id)&&seenC.add(f.id))};
 }
 async function renderFranchises(){
   if(!ready()) return;
   const vs=++viewSeq;
-  if(!franchiseCache||franchiseCache.v!==1||Date.now()-franchiseCache.t>2592e6){
+  if(!franchiseCache||franchiseCache.v!==2||Date.now()-franchiseCache.t>2592e6){
     $('#main').innerHTML=`<div class="section"><h3>Building the franchise list…</h3><div class="mute">One-time setup (roughly 15–30 seconds).</div><progress id="pp" value="0" max="1"></progress></div>`;
     try{
       franchiseCache=await buildFranchises((d,n)=>{const p=$('#pp');if(p){p.max=n;p.value=d}});
@@ -783,7 +805,7 @@ async function renderFranchises(){
     <div class="bar"><select id="frSort">${opt('curated','Biggest first')}${opt('films','Most films')}${opt('finish','Closest to finishing')}</select>
     <label><input type="checkbox" id="frDone" ${frPrefs.hideDone?'checked':''}> hide finished</label></div>
     <div class="grid">${list.map(f=>`<div class="card fc" data-cid="${f.id}" data-name="${esc(f.name)}">
-      ${f.poster?`<img loading="lazy" src="${IMG+f.poster}">`:'<img>'}${f.s===f.n?'<i class="tick">✓</i>':''}
+      ${f.poster?`<img loading="lazy" alt="" src="${IMG+f.poster}">`:'<img alt="">'}${f.s===f.n?'<i class="tick">✓</i>':''}
       <div class="m"><b>${esc(niceName(f.name))}</b><span>${f.n} films · ${f.s} seen</span><progress value="${f.s}" max="${f.n}"></progress></div></div>`).join('')||'<span class="mute">Nothing to show.</span>'}</div>`;
   $('#frSort').onchange=e=>{frPrefs.sort=e.target.value;save('frPrefs',frPrefs);renderFranchises()};
   $('#frDone').onchange=e=>{frPrefs.hideDone=e.target.checked;save('frPrefs',frPrefs);renderFranchises()};
@@ -955,7 +977,7 @@ function renderFriend(){
       const files=fPending;
       if(!Object.keys(files).length) return toast('Add the export first');
       $('#fGo').disabled=true;
-      try{await importFriend(files,$('#fName').value.trim()||'Friend');fImport=false;fShown=60;navFriendLabel();renderFriend()}
+      try{await importFriend(files,$('#fName').value.trim()||'Friend');fImport=false;fShown=60;navFriendLabel();if(tab==='friend') renderFriend()}
       catch(e){toast(e.message);$('#fGo').disabled=false}
     };
     if($('#fCancel')) $('#fCancel').onclick=()=>{fImport=false;renderFriend()};
@@ -1035,8 +1057,8 @@ async function importMine(out){
   for(const k of ['watched','ratings','watchlist']) if(out[k]) parts[k]=await readLB(out[k]);
   const seenRows=[...(parts.watched||[]),...(parts.ratings||[])], wantRows=parts.watchlist||[];
   const all=new Map(); [...seenRows,...wantRows].forEach(x=>all.set(x.name+'|'+x.year,x));
-  const todo=[...all.values()];
-  await matchAll(todo,$('#impBar'),$('#imp'));
+  const todo=[...all.values()], label=$('#imp');
+  await matchAll(todo,$('#impBar'),label);
   const get=x=>matchCache[x.name+'|'+x.year], missed=new Set(), stamp=Date.now();
   let addedSeen=0, addedWant=0;
   seenRows.forEach((x,idx)=>{const m=get(x);if(!m){missed.add(x.name+x.year);return}
@@ -1044,8 +1066,31 @@ async function importMine(out){
   wantRows.forEach(x=>{const m=get(x);if(!m){missed.add(x.name+x.year);return}
     if(!seen[m.id]&&!want[m.id]){want[m.id]={...m,ts:stamp};delete skip[m.id];addedWant++}});
   saveAll(); save('matchCache',matchCache);
-  $('#imp').textContent=`Done: ${addedSeen} added to seen, ${addedWant} to watchlist`+(missed.size?`, ${missed.size} couldn't be matched`:'')+'.';
-  setTimeout(renderLists,2500);
+  label.textContent=`Done: ${addedSeen} added to seen, ${addedWant} to watchlist`+(missed.size?`, ${missed.size} couldn't be matched`:'')+'.';
+  setTimeout(()=>{if(tab==='lists') renderLists()},2500);
+}
+const BACKUP_PREFS=['friend','fp','filters','sortPrefs','frPrefs','hidePaid','hideNA'];
+function buildBackup(){
+  const data={app:'hva-skal-vi-se',v:1,saved:new Date().toISOString(),seen,want,skip};
+  BACKUP_PREFS.forEach(k=>{const v=LS(k,null); if(v!==null) data[k]=v});
+  return data;
+}
+function exportBackup(){
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([JSON.stringify(buildBackup())],{type:'application/json'}));
+  a.download='hva-skal-vi-se-backup-'+new Date().toISOString().slice(0,10)+'.json';a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+}
+// Lists are merged into what is already here; preferences and friend data come from the backup.
+async function importBackup(file,opts={}){
+  let b; try{b=JSON.parse(await file.text())}catch{throw new Error('That is not a backup file')}
+  if(!b||b.app!=='hva-skal-vi-se') throw new Error('That is not a backup from this app');
+  Object.assign(seen,b.seen||{}); Object.assign(want,b.want||{}); Object.assign(skip,b.skip||{});
+  for(const id in seen){delete want[id];delete skip[id]}
+  saveAll();
+  BACKUP_PREFS.forEach(k=>{if(b[k]!==undefined) save(k,b[k])});
+  toast('Backup restored');
+  if(opts.reload!==false) setTimeout(()=>location.reload(),700);
 }
 function exportSeen(){
   const csv='Name,Year,TMDB id\n'+Object.values(seen).map(m=>`"${m.title.replace(/"/g,'""')}",${yr(m)},${m.id}`).join('\n');
