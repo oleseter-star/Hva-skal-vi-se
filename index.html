@@ -192,7 +192,7 @@ function filterBar(){
    <select id="fRating">${[['0','Any rating'],['6','★ 6+'],['6.5','★ 6.5+'],['7','★ 7+'],['7.5','★ 7.5+'],['8','★ 8+']].map(([v,l])=>opt(v,l,filters.rating)).join('')}</select>
    <select id="fRuntime">${[['','Any length'],['100','Under 100 min'],['120','Under 2 h'],['150','Under 2.5 h']].map(([v,l])=>opt(v,l,filters.runtime)).join('')}</select>
    <select id="fDecade">${[['','Any era'],['2020','2020s'],['2010','2010s'],['2000','2000s'],['1990','1990s'],['1980','1980s'],['1900','Before 1980']].map(([v,l])=>opt(v,l,filters.decade)).join('')}</select>
-   <select id="fSort">${[['popularity.desc','Popular'],['vote_average.desc','Best rated'],['primary_release_date.desc','Newest']].map(([v,l])=>opt(v,l,filters.sort)).join('')}</select>
+   <select id="fSort">${[['popularity.desc','Popular'],['vote_average.desc','Best rated'],['primary_release_date.desc','Newest'],['primary_release_date.asc','Oldest']].map(([v,l])=>opt(v,l,filters.sort)).join('')}</select>
    <label><input type="checkbox" id="fHide" ${filters.hideSeen?'checked':''}> hide seen</label>
    <label><input type="checkbox" id="fSkip" ${hideSkipOn()?'checked':''}> hide not interested</label></div>`;
 }
@@ -228,6 +228,21 @@ async function loadDiscover(vs){
   }catch(e){toast(e.message)}
 }
 
+/* ---------- sorting (rating / age) ---------- */
+// "Best rated" is weighted by vote count so a film with a single 10/10 vote doesn't top the list.
+const bayes=m=>{const R=m.vote_average||0, v=m.vote_count; return v==null?R:(v*R+100*6.5)/(v+100)};
+const cmp={
+  rating:(a,b)=>bayes(b)-bayes(a),
+  new:(a,b)=>(b.release_date||'').localeCompare(a.release_date||''),
+  old:(a,b)=>(a.release_date||'9999').localeCompare(b.release_date||'9999'),
+  pop:(a,b)=>(b.popularity||0)-(a.popularity||0)
+};
+let sortPrefs=LS('sortPrefs',{});
+function sortSelect(id,page,def,opts){
+  const cur=sortPrefs[page]||def;
+  return `<select id="${id}" title="Sort">${opts.map(([k,l])=>`<option value="${k}" ${k===cur?'selected':''}>${l}</option>`).join('')}</select>`;
+}
+function bindSort(id,page,fn){const el=$('#'+id); if(el) el.onchange=e=>{sortPrefs[page]=e.target.value;save('sortPrefs',sortPrefs);fn()}}
 let topCache=null;
 async function renderTop(){
   if(!ready()) return;
@@ -245,10 +260,17 @@ async function renderTop(){
     $('#main').innerHTML=`<div class="section"><h3>Top ${list.length} on your services</h3>
       <div class="mute">Ranked by TMDB user rating (min. 3000 votes) among movies streaming on your Norwegian services. You've seen ${n} of ${list.length}.</div>
       <progress value="${n}" max="${list.length}"></progress>
-      <div class="bar" style="margin:10px 0 0"><label><input type="checkbox" id="topHide"> hide seen</label>
+      <div class="bar" style="margin:10px 0 0">${sortSelect('topSort','top','rank',[['rank','Best rated (rank)'],['new','Newest first'],['old','Oldest first']])}<label><input type="checkbox" id="topHide"> hide seen</label>
       <label><input type="checkbox" id="topSkip" ${hideSkipOn()?'checked':''}> hide not interested</label></div></div>
       <div class="grid" id="grid"></div>`;
-    const draw=()=>{const h=$('#topHide').checked,hs=$('#topSkip').checked;$('#grid').innerHTML=list.map((m,i)=>(h&&seenTest(m.id))||(hs&&skip[m.id])?'':cardHTML(m,i+1)).join('');fillProviders($('#grid'))};
+    const draw=()=>{
+      const h=$('#topHide').checked, hs=$('#topSkip').checked, k=sortPrefs.top||'rank';
+      const items=list.map((m,i)=>({m,rank:i+1})).filter(x=>!((h&&seenTest(x.m.id))||(hs&&skip[x.m.id])));
+      if(k!=='rank') items.sort((a,b)=>cmp[k](a.m,b.m));
+      $('#grid').innerHTML=items.map(x=>cardHTML(x.m,x.rank)).join('');   // the badge keeps showing the rating rank
+      fillProviders($('#grid'));
+    };
+    bindSort('topSort','top',draw);
     $('#topSkip').onchange=draw;
     $('#topHide').onchange=draw; draw();
   }catch(e){toast(e.message)}
@@ -258,8 +280,9 @@ const byTs=(a,b)=>(b.ts||0)-(a.ts||0), listLimit={seen:60,skip:60,want:60}, GID=
 let wantSorted=false;
 function renderLists(){
   const wantScore=id=>{const c=cached(id);return c?(c.l.length?2:c.p.length?1:0):0};
-  const lists={seen:Object.values(seen).sort(byTs),skip:Object.values(skip).sort(byTs),want:Object.values(want).sort(byTs)};
-  if(wantSorted) lists.want.sort((a,b)=>wantScore(b.id)-wantScore(a.id));
+  const lk=sortPrefs.lists||'added', lcmp=lk==='added'?byTs:cmp[lk];
+  const lists={seen:Object.values(seen).sort(lcmp),skip:Object.values(skip).sort(lcmp),want:Object.values(want).sort(lcmp)};
+  if(wantSorted&&lk==='added') lists.want.sort((a,b)=>wantScore(b.id)-wantScore(a.id));
   const section=(key,title,extra,empty)=>{
     const items=lists[key], n=listLimit[key];
     return `<div class="section"><h3>${title} (${items.length}) ${extra}</h3>
@@ -274,6 +297,7 @@ function renderLists(){
       <input type="file" id="mFiles" multiple accept=".csv,.zip" hidden><input type="file" id="mFolder" webkitdirectory hidden></div>
     <div id="mFound" class="mute"></div>
     <progress id="impBar" value="0" max="1" style="display:none"></progress> <span id="imp" class="mute"></span></div>`
+    +`<div class="bar"><span class="mute">Sort lists:</span> ${sortSelect('lSort','lists','added',[['added','Recently added'],['rating','Best rated'],['new','Newest first'],['old','Oldest first']])}</div>`
     +section('seen','Seen','<button id="exp" style="float:right">Export CSV</button>','Empty. Mark movies as seen or import from Letterboxd.')
     +section('skip','Not interested','','Empty. Use "Not interested" in a movie\'s details to hide it everywhere.')
     +section('want','Watchlist','<button id="chk" style="float:right">Check what\'s streaming now</button>','Empty.');
@@ -287,6 +311,7 @@ function renderLists(){
   });
   $('#exp').onclick=exportSeen;
   $('#chk').onclick=checkWatchlist;
+  bindSort('lSort','lists',()=>{const y=scrollY;renderLists();scrollTo(0,y)});
   document.querySelectorAll('[data-more]').forEach(b=>b.onclick=()=>{listLimit[b.dataset.more]+=60;const y=scrollY;renderLists();scrollTo(0,y)});
   fillProviders($('#gWant'));
 }
@@ -524,6 +549,7 @@ async function renderSearch(){
   document.querySelectorAll('#nav button').forEach(b=>b.classList.remove('on'));
   $('#main').innerHTML=`<h3 style="margin-top:0">Results for “${esc(lastQ)}”</h3>
     <div class="people" id="people"></div>
+    <div class="bar">${sortSelect('sSort','search','rel',[['rel','Best match'],['rating','Best rated'],['new','Newest first'],['old','Oldest first'],['pop','Most popular']])}</div>
     <div id="sStatus" class="mute" style="margin-bottom:10px"></div>
     <div class="grid" id="grid" data-search><span class="mute">Searching…</span></div>`;
   try{
@@ -531,9 +557,14 @@ async function renderSearch(){
     if(vs!==viewSeq) return;
     const ppl=p.results.filter(x=>['Acting','Directing'].includes(x.known_for_department)).slice(0,6);
     $('#people').innerHTML=c.results.slice(0,4).map(x=>`<button class="chip fr" data-cid="${x.id}" data-name="${esc(x.name)}">${x.poster_path?`<img src="https://image.tmdb.org/t/p/w92${x.poster_path}">`:''}<span>${esc(x.name.replace(/ Collection$/,''))}<br><small class="mute">Franchise</small></span></button>`).join('')+ppl.map(x=>`<button class="chip" data-pid="${x.id}" data-dep="${x.known_for_department}" data-name="${esc(x.name)}">${x.profile_path?`<img src="https://image.tmdb.org/t/p/w185${x.profile_path}">`:''}<span>${esc(x.name)}<br><small class="mute">${x.known_for_department==='Directing'?'Director':'Actor'}</small></span></button>`).join('');
-    $('#grid').innerHTML=m.results.map(x=>cardHTML(x)).join('')||'<span class="mute">No title matches.</span>';
+    const drawSearch=()=>{
+      const k=sortPrefs.search||'rel', list=k==='rel'?m.results:m.results.slice().sort((a,b)=>cmp[k](a,b)||cmp.pop(a,b));
+      $('#grid').innerHTML=list.map(x=>cardHTML(x)).join('')||'<span class="mute">No title matches.</span>';
+      return fillProviders($('#grid'));
+    };
+    bindSort('sSort','search',drawSearch);
     $('#sStatus').textContent=m.results.length?'Checking where these are streaming…':'';
-    await fillProviders($('#grid'));
+    await drawSearch();
     if(vs!==viewSeq) return;
     const st=$('#sStatus'); if(!st||!m.results.length) return;
     const free=m.results.filter(x=>{const c=cached(x.id);return c&&c.l.length}).length, paid=m.results.filter(x=>{const c=cached(x.id);return c&&!c.l.length&&c.p.length}).length;
@@ -547,6 +578,7 @@ async function showPerson(id,name,mode){
   $('#main').innerHTML=`<h3 style="margin-top:0">${esc(name)} <span class="mute">· filmography</span></h3>
     <div class="bar"><button id="mCast" class="${mode==='cast'?'on':''}">As actor</button>
     <button id="mCrew" class="${mode==='crew'?'on':''}">As director</button>
+    ${sortSelect('pSort','person','avail',[['avail','Streamable first'],['rating','Best rated'],['new','Newest first'],['old','Oldest first'],['pop','Most popular']])}
     <button id="mBack">← Back</button></div>
     <div id="pStatus" class="mute" style="margin-bottom:10px"></div>
     <div class="grid" id="grid"><span class="mute">Loading…</span></div><p id="pMore"></p>`;
@@ -565,16 +597,21 @@ async function showPerson(id,name,mode){
       if(token!==viewSeq) return;
     }
     const rank=i=>{const x=cached(i);return x&&x.l.length?0:x&&x.p.length?1:2};
-    films.sort((a,b)=>rank(a.id)-rank(b.id)||(b.popularity||0)-(a.popularity||0));
+    const sortFilms=()=>{
+      const k=sortPrefs.person||'avail';
+      films.sort(k==='avail'?(a,b)=>rank(a.id)-rank(b.id)||cmp.pop(a,b):(a,b)=>cmp[k](a,b)||cmp.pop(a,b));
+    };
     const n=[0,0,0]; films.forEach(f=>n[rank(f.id)]++);
     $('#pStatus').textContent=`${films.length} films · ${n[0]} free on your services`+(n[1]?` · ${n[1]} rent/buy`:'')+` · ${n[2]} not available`;
     let shown=60;
     const draw=()=>{
+      sortFilms();
       $('#grid').innerHTML=films.slice(0,shown).map(m=>cardHTML(m)).join('')||`<span class="mute">No ${mode==='cast'?'acting':'directing'} credits found.</span>`;
       $('#pMore').innerHTML=films.length>shown?'<button id="pMoreBtn">Show more</button>':'';
       if($('#pMoreBtn')) $('#pMoreBtn').onclick=()=>{shown+=60;draw()};
       fillProviders($('#grid'));
     };
+    bindSort('pSort','person',()=>{shown=60;draw()});
     draw();
   }catch(e){toast(e.message)}
 }
@@ -740,7 +777,7 @@ async function renderFranchises(){
 async function showFranchise(id,name){
   const vs=++viewSeq;
   $('#main').innerHTML=`<h3 style="margin-top:0">${esc(niceName(name))} <span class="mute">· franchise</span></h3>
-    <div class="bar"><button id="mBack">← Back</button><span class="mute" id="frInfo"></span></div>
+    <div class="bar"><button id="mBack">← Back</button>${sortSelect('frSortP','franchise','old',[['old','Release order'],['new','Newest first'],['rating','Best rated']])}<span class="mute" id="frInfo"></span></div>
     <div class="grid" id="grid"><span class="mute">Loading…</span></div>`;
   $('#mBack').onclick=()=>history.back();
   try{
@@ -749,8 +786,14 @@ async function showFranchise(id,name){
     const parts=d.parts.slice().sort((a,b)=>(a.release_date||'9999').localeCompare(b.release_date||'9999'));
     const s=parts.filter(m=>seen[m.id]).length, next=parts.find(m=>!seen[m.id]&&!skip[m.id]);
     $('#frInfo').textContent=`${s} of ${parts.length} seen`+(next&&s<parts.length?` · next up: ${next.title}`:'')+(s===parts.length?' · finished 🎉':'');
-    $('#grid').innerHTML=parts.map((m,i)=>cardHTML(m,i+1)).join('');
-    fillProviders($('#grid'));
+    const order=new Map(parts.map((m,i)=>[m.id,i+1]));   // the badge keeps showing the release-order number
+    const drawParts=()=>{
+      const k=sortPrefs.franchise||'old', list=k==='old'?parts:parts.slice().sort((a,b)=>cmp[k](a,b)||cmp.old(a,b));
+      $('#grid').innerHTML=list.map(m=>cardHTML(m,order.get(m.id))).join('');
+      fillProviders($('#grid'));
+    };
+    bindSort('frSortP','franchise',drawParts);
+    drawParts();
   }catch(e){toast(e.message)}
 }
 
@@ -911,7 +954,7 @@ function renderFriend(){
     <div class="mute">${nW} on watchlist · ${nR} rated · ${nK} ♥ liked · ${nA} watched. Shows what ${esc(friend.name)} has lined up or loved that you can stream right now.</div></div>
     <div class="bar">
       <select id="fpKind">${opt('picks','⭐ Best picks for me (loved + ♥ + planned)',fp.kind)}${nW?opt('watchlist',`Planning to watch (${nW})`,fp.kind):''}${nK?opt('liked',`♥ Liked (${nK})`,fp.kind):''}${nL?opt('loved',`Rated 4★+ (${nL})`,fp.kind):''}${nA?opt('watched',`Seen in general (${nA})`,fp.kind):''}</select>
-      <select id="fpSort">${opt('rating','Strongest signal first',fp.sort)}${opt('tmdb','Best rated',fp.sort)}${opt('new','Newest',fp.sort)}</select>
+      <select id="fpSort">${opt('rating','Strongest signal first',fp.sort)}${opt('tmdb','Best rated',fp.sort)}${opt('new','Newest',fp.sort)}${opt('old','Oldest',fp.sort)}</select>
       ${chk('fpSeen','hideSeen',"hide what I've seen")}${chk('fpSkip','hideSkip','hide not interested')}${chk('fpMine','onlyMine','only on my services')}
       <button class="primary" id="fPick">🎲 Pick one</button><button id="fEdit">Update data</button><button id="fDel">Remove</button></div>
     <div id="fStatus" class="mute" style="margin-bottom:10px"></div><div class="grid" id="grid"></div><p id="fMore"></p>`;
@@ -940,6 +983,7 @@ async function drawFriend(){
   if(fp.sort==='rating'&&fp.kind==='picks'){const sc=new Map(list.map(id=>[id,picksScore(id,likedSet,wlSet)]));list.sort((a,b)=>sc.get(b)-sc.get(a)||r(b)-r(a)||va(b)-va(a))}
   else if(fp.sort==='rating') list.sort((a,b)=>r(b)-r(a)||(likedSet.has(b)-likedSet.has(a))||va(b)-va(a));
   else if(fp.sort==='tmdb') list.sort((a,b)=>va(b)-va(a));
+  else if(fp.sort==='old') list.sort((a,b)=>(mv(a).release_date||'9999').localeCompare(mv(b).release_date||'9999'));
   else list.sort((a,b)=>(mv(b).release_date||'').localeCompare(mv(a).release_date||''));
   fList=list;
   st().textContent=`${list.length} of ${ids.length} films${fp.onlyMine?' are on your services':''}${list.length>fShown?` · showing ${fShown}`:''}`;
