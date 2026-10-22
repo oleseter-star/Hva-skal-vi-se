@@ -68,6 +68,7 @@ body.modal-open{overflow:hidden}
 .fc .m progress{width:100%;height:6px;margin-top:6px}
 .chip.fr img{border-radius:6px;width:28px;height:40px}
 .dd{position:relative}
+#kindSw{display:flex}#kindSw button{border-radius:0}#kindSw button:first-child{border-radius:8px 0 0 8px}#kindSw button:last-child{border-radius:0 8px 8px 0;border-left:0}
 #navDD{display:contents}
 #menuBtn{display:none}
 #filtDD .panel{display:none;position:absolute;right:0;top:calc(100% + 6px);background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px;z-index:30;min-width:230px;flex-direction:column;gap:8px}
@@ -80,6 +81,7 @@ body.modal-open{overflow:hidden}
 @media(max-width:760px){
   header{gap:8px}
   header h1{flex:1;margin:0;order:1}
+  #kindSw{order:2}
   #navDD{display:block;order:2}
   #menuBtn{display:inline-block}
   #nav{display:none;position:absolute;right:0;top:calc(100% + 6px);background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:8px;z-index:30;flex-direction:column;min-width:170px}
@@ -99,6 +101,7 @@ body.modal-open{overflow:hidden}
 <body>
 <header>
   <h1>🎬 Hva skal vi se</h1>
+  <div id="kindSw" role="group" aria-label="Movies or series"><button data-kind="movie">Movies</button><button data-kind="tv">Series</button></div>
   <div class="dd" id="navDD">
     <button id="menuBtn">☰ Menu</button>
     <nav id="nav">
@@ -137,6 +140,13 @@ let cfg=LS('cfg',{key:'',providers:[]});
 let seen=LS('seen',{}), want=LS('want',{}), skip=LS('skip',{});
 const hideSkipOn=()=>filters.hideSkip!==false;
 let filters=LS('filters',{genre:'',rating:'6.5',runtime:'',decade:'',sort:'popularity.desc',hideSeen:true});
+let kind=LS('kind','movie'); if(kind!=='tv') kind='movie';
+let genresBy={};
+// Series ids are prefixed ('t123') so they can share seen / watchlist / not-interested with movies without clashing.
+const isTv=id=>String(id)[0]==='t', ep=id=>isTv(id)?'/tv/'+String(id).slice(1):'/movie/'+id;
+const tvNorm=x=>({id:'t'+x.id,title:x.name,release_date:x.first_air_date,poster_path:x.poster_path,vote_average:x.vote_average,vote_count:x.vote_count,popularity:x.popularity});
+const norm=r=>kind==='tv'?{...r,results:r.results.map(tvNorm)}:r;
+const dsc=p=>api('/discover/'+kind,p).then(norm);
 let genres=[], tab='discover', discoverPage=1, lastPick=null, viewSeq=0;
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -161,10 +171,11 @@ async function api(path,params={}){
 
 /* ---------- discover params ---------- */
 function discoverParams(extra={}){
-  const f=filters, p={watch_region:REGION,with_watch_providers:cfg.providers.join('|'),with_watch_monetization_types:'flatrate',
-    include_adult:false,'vote_count.gte':200,'vote_average.gte':f.rating,with_genres:f.genre,'with_runtime.lte':f.runtime,sort_by:f.sort};
-  if(f.sort==='primary_release_date.desc') p['vote_count.gte']=50;
-  if(f.decade){const d=+f.decade; if(d===1900){p['primary_release_date.lte']='1979-12-31'} else {p['primary_release_date.gte']=d+'-01-01';p['primary_release_date.lte']=(d+9)+'-12-31'}}
+  const f=filters, tv=kind==='tv', dk=tv?'first_air_date':'primary_release_date';
+  const p={watch_region:REGION,with_watch_providers:cfg.providers.join('|'),with_watch_monetization_types:'flatrate',
+    include_adult:false,'vote_count.gte':tv?100:200,'vote_average.gte':f.rating,with_genres:f.genre,'with_runtime.lte':f.runtime,sort_by:f.sort.replace('primary_release_date',dk)};
+  if(f.sort==='primary_release_date.desc') p['vote_count.gte']=tv?20:50;
+  if(f.decade){const d=+f.decade; if(d===1900){p[dk+'.lte']='1979-12-31'} else {p[dk+'.gte']=d+'-01-01';p[dk+'.lte']=(d+9)+'-12-31'}}
   return {...p,...extra};
 }
 const yr=m=>(m.release_date||'').slice(0,4);
@@ -176,7 +187,7 @@ function cardHTML(m,rank){
   return `<div class="card ${s?'seen':''} ${k?'skipped':''}" data-id="${m.id}" tabindex="0">
     ${m.poster_path?`<img loading="lazy" alt="" src="${IMG+m.poster_path}">`:'<img alt="">'}
     ${s?'<i class="tick">✓</i>':k?'<i class="tick skip">⊘</i>':''}${rank?`<span class="rank">${rank}</span>`:''}
-    <div class="m"><b>${esc(m.title)}</b><span>${yr(m)}${m.vote_average?' · ★'+m.vote_average.toFixed(1):''}</span>${friendTag(m.id)}<div class="pl" data-pl="${m.id}">${provHTML(m.id)}</div></div></div>`;
+    <div class="m"><b>${esc(m.title)}</b><span>${yr(m)}${isTv(m.id)?' · Series':''}${m.vote_average?' · ★'+m.vote_average.toFixed(1):''}</span>${friendTag(m.id)}<div class="pl" data-pl="${m.id}">${provHTML(m.id)}</div></div></div>`;
 }
 const slim=m=>({id:m.id,title:m.title,release_date:m.release_date,poster_path:m.poster_path,vote_average:m.vote_average});
 
@@ -192,7 +203,7 @@ function filterBar(){
   return `<div class="bar">
    <select id="fGenre">${opt('','Any genre',filters.genre)}${genres.map(g=>opt(g.id,g.name,filters.genre)).join('')}</select>
    <select id="fRating">${[['0','Any rating'],['6','★ 6+'],['6.5','★ 6.5+'],['7','★ 7+'],['7.5','★ 7.5+'],['8','★ 8+']].map(([v,l])=>opt(v,l,filters.rating)).join('')}</select>
-   <select id="fRuntime">${[['','Any length'],['100','Under 100 min'],['120','Under 2 h'],['150','Under 2.5 h']].map(([v,l])=>opt(v,l,filters.runtime)).join('')}</select>
+   <select id="fRuntime">${(kind==='tv'?[['','Any episode length'],['30','Episodes under 30 min'],['45','Episodes under 45 min'],['60','Episodes under 1 h']]:[['','Any length'],['100','Under 100 min'],['120','Under 2 h'],['150','Under 2.5 h']]).map(([v,l])=>opt(v,l,filters.runtime)).join('')}</select>
    <select id="fDecade">${[['','Any era'],['2020','2020s'],['2010','2010s'],['2000','2000s'],['1990','1990s'],['1980','1980s'],['1900','Before 1980']].map(([v,l])=>opt(v,l,filters.decade)).join('')}</select>
    <select id="fSort">${[['popularity.desc','Popular'],['vote_average.desc','Best rated'],['primary_release_date.desc','Newest'],['primary_release_date.asc','Oldest']].map(([v,l])=>opt(v,l,filters.sort)).join('')}</select>
    <label><input type="checkbox" id="fHide" ${filters.hideSeen?'checked':''}> hide seen</label>
@@ -217,7 +228,7 @@ async function loadDiscover(vs){
   try{
     let shown=0, tries=0;
     while(shown<12 && tries<6){
-      const r=await api('/discover/movie',discoverParams({page:discoverPage++}));
+      const r=await dsc(discoverParams({page:discoverPage++}));
       if(vs!==viewSeq) return;
       const g=$('#grid'), list=r.results.filter(m=>!(filters.hideSeen&&seenTest(m.id))&&!(hideSkipOn()&&skip[m.id]));
       if(!g.querySelector('.card')) g.innerHTML='';
@@ -251,16 +262,16 @@ async function renderTop(){
   const vs=++viewSeq;
   $('#main').innerHTML='<p class="mute">Loading…</p>';
   try{
-    const key=cfg.providers.join();
+    const key=kind+cfg.providers.join();
     if(!topCache||topCache.k!==key||Date.now()-topCache.t>6e5){
-      const base={watch_region:REGION,with_watch_providers:cfg.providers.join('|'),with_watch_monetization_types:'flatrate',include_adult:false,'vote_count.gte':3000,sort_by:'vote_average.desc'};
-      const pages=await Promise.all([1,2,3,4,5].map(p=>api('/discover/movie',{...base,page:p})));
+      const base={watch_region:REGION,with_watch_providers:cfg.providers.join('|'),with_watch_monetization_types:'flatrate',include_adult:false,'vote_count.gte':kind==='tv'?500:3000,sort_by:'vote_average.desc'};
+      const pages=await Promise.all([1,2,3,4,5].map(p=>dsc({...base,page:p})));
       topCache={k:key,t:Date.now(),list:pages.flatMap(r=>r.results).slice(0,100)};
     }
     if(vs!==viewSeq) return;
     const list=topCache.list, n=list.filter(m=>seenTest(m.id)).length;
     $('#main').innerHTML=`<div class="section"><h3>Top ${list.length} on your services</h3>
-      <div class="mute">Ranked by TMDB user rating (min. 3000 votes) among movies streaming on your Norwegian services. You've seen ${n} of ${list.length}.</div>
+      <div class="mute">Ranked by TMDB user rating (min. ${kind==='tv'?500:3000} votes) among ${kind==='tv'?'series':'movies'} streaming on your Norwegian services. You've seen ${n} of ${list.length}.</div>
       <progress value="${n}" max="${list.length}"></progress>
       <div class="bar" style="margin:10px 0 0">${sortSelect('topSort','top','rank',[['rank','Best rated (rank)'],['new','Newest first'],['old','Oldest first']])}<label><input type="checkbox" id="topHide"> hide seen</label>
       <label><input type="checkbox" id="topSkip" ${hideSkipOn()?'checked':''}> hide not interested</label></div></div>
@@ -370,7 +381,7 @@ function applyOnlyMine(card){
 // One request per film at a time, shared by everything that asks for it.
 function fetchProv(id){
   const c=cached(id); if(c) return Promise.resolve(c);
-  return provInflight[id]??=api(`/movie/${id}/watch/providers`)
+  return provInflight[id]??=api(ep(id)+'/watch/providers')
     .then(r=>{const no=r.results?.[REGION]||{};return provCache[id]={t:Date.now(),l:mineOf(no),p:paidOf(no)}})
     .finally(()=>{delete provInflight[id]});
 }
@@ -441,9 +452,13 @@ async function loadProviders(force){
     const kept=(cfg.providers||[]).filter(id=>cfg.allProv.some(p=>p.provider_id===id));   // keep the user's own selection when re-saving the key
     cfg.providers=kept.length?kept:cfg.allProv.filter(p=>wanted.test(p.provider_name)).map(p=>p.provider_id);
     save('cfg',cfg);
-    genres=(await api('/genre/movie/list')).genres;
+    genresBy={}; await loadGenres();
     toast('Services loaded');
   }catch(e){toast(e.message)}
+}
+async function loadGenres(){
+  if(!genresBy[kind]) genresBy[kind]=(await api('/genre/'+kind+'/list')).genres;
+  genres=genresBy[kind];
 }
 function ready(){
   if(cfg.key&&cfg.providers.length) return true;
@@ -458,13 +473,18 @@ function creditsHTML(d){
   const c=d.credits; if(!c) return '';
   const ids=new Set(), dirs=(c.crew||[]).filter(p=>p.job==='Director'&&!ids.has(p.id)&&ids.add(p.id));
   const cast=(c.cast||[]).slice().sort((a,b)=>a.order-b.order);
-  return (dirs.length?`<div class="credits"><span class="mute">Directed by</span> ${dirs.map(p=>plink(p,'crew')).join(', ')}</div>`:'')
+  const mk=isTv(d.id)?(d.created_by||[]).map(p=>esc(p.name)).join(', '):'';
+  return (mk?`<div class="credits"><span class="mute">Created by</span> ${mk}</div>`:'')+(dirs.length?`<div class="credits"><span class="mute">Directed by</span> ${dirs.map(p=>plink(p,'crew')).join(', ')}</div>`:'')
     +(cast.length?`<div class="credits" id="castLine"><span class="mute">Starring</span> ${cast.slice(0,10).map(p=>plink(p,'cast')).join(', ')}${cast.length>10?` <button class="plink" id="moreCast">+${Math.min(cast.length,30)-10} more</button>`:''}</div>`:'');
 }
 function bindPlinks(){$('#sheet').querySelectorAll('.plink[data-pid]').forEach(b=>b.onclick=()=>goPerson(b.dataset.pid,b.dataset.name,b.dataset.mode))}
 async function detail(id){
   if(detailCache[id]) return detailCache[id];
-  const d=await api('/movie/'+id,{append_to_response:'watch/providers,credits'});
+  const d=await api(ep(id),{append_to_response:'watch/providers,credits'});
+  if(isTv(id)){
+    const n=d.number_of_seasons, mins=(d.episode_run_time||[])[0];
+    Object.assign(d,{id:String(id),title:d.name,release_date:d.first_air_date,_len:`${n||'?'} season${n===1?'':'s'}`+(mins?` · ~${mins} min/ep`:'')});
+  } else d._len=(d.runtime||'?')+' min';
   const no=d['watch/providers']?.results?.[REGION]||{};
   d._link=no.link; d._mine=mineOf(no); d._paid=paidOf(no);
   provCache[id]={t:Date.now(),l:d._mine,p:d._paid}; persistProv();
@@ -499,7 +519,7 @@ async function openModal(id,opts={}){
     const m=slim(d), s=!!seen[id], w=!!want[id], k=!!skip[id];
     $('#sheet').innerHTML=`${d.poster_path?`<img alt="" src="${IMG+d.poster_path}">`:''}
       <div><h2>${esc(d.title)} <span class="mute">(${yr(d)})</span></h2>
-      <div class="mute">${esc((d.genres||[]).map(g=>g.name).join(', '))} · ${d.runtime||'?'} min · ★${(d.vote_average||0).toFixed(1)} (${d.vote_count} votes)</div>
+      <div class="mute">${esc((d.genres||[]).map(g=>g.name).join(', '))} · ${d._len} · ★${(d.vote_average||0).toFixed(1)} (${d.vote_count} votes)</div>
       ${d.tagline?`<p><i>${esc(d.tagline)}</i></p>`:''}<p>${esc(d.overview)}</p>${creditsHTML(d)}
       <div>${d._mine.map(p=>`<span class="badge hit">${logoImg(p)} ${esc(p.name)} · included</span>`).join('')}${d._paid.map(paidTag).join('')}${(d._mine.length||d._paid.length)?'':'<span class="badge na">✕ Not available on your services</span>'}</div>
       <div class="acts">
@@ -553,11 +573,11 @@ async function surprise(){
   if(!ready()) return;
   showModalUI(); $('#sheet').innerHTML='<p class="mute">Rolling…</p>';
   try{
-    const first=await api('/discover/movie',discoverParams({page:1}));
+    const first=await dsc(discoverParams({page:1}));
     const pages=Math.max(1,Math.min(first.total_pages,30));
     for(let i=0;i<10;i++){
       const p=1+Math.floor(Math.random()*pages);
-      const r=p===1?first:await api('/discover/movie',discoverParams({page:p}));
+      const r=p===1?first:await dsc(discoverParams({page:p}));
       const pool=r.results.filter(m=>!seen[m.id]&&!skip[m.id]&&m.id!==lastPick);
       if(pool.length){const pick=pool[Math.floor(Math.random()*pool.length)];lastPick=pick.id;return openModal(pick.id,{again:true})}
     }
@@ -578,7 +598,8 @@ async function renderSearch(){
     <div id="sStatus" class="mute" style="margin-bottom:10px"></div>
     <div class="grid" id="grid" data-search><span class="mute">Searching…</span></div>`;
   try{
-    const [m,p,c]=await Promise.all([api('/search/movie',{query:lastQ,include_adult:false}),api('/search/person',{query:lastQ,include_adult:false}),api('/search/collection',{query:lastQ}).catch(()=>({results:[]}))]);
+    const tv=kind==='tv', none={results:[]};
+    const [m,p,c]=await Promise.all([api('/search/'+kind,{query:lastQ,include_adult:false}).then(norm),tv?none:api('/search/person',{query:lastQ,include_adult:false}),tv?none:api('/search/collection',{query:lastQ}).catch(()=>none)]);
     if(vs!==viewSeq) return;
     const ppl=p.results.filter(x=>['Acting','Directing'].includes(x.known_for_department)).slice(0,6);
     $('#people').innerHTML=c.results.slice(0,4).map(x=>`<button class="chip fr" data-cid="${x.id}" data-name="${esc(x.name)}">${x.poster_path?`<img alt="" src="https://image.tmdb.org/t/p/w92${x.poster_path}">`:''}<span>${esc(x.name.replace(/ Collection$/,''))}<br><small class="mute">Franchise</small></span></button>`).join('')+ppl.map(x=>`<button class="chip" data-pid="${x.id}" data-dep="${x.known_for_department}" data-name="${esc(x.name)}">${x.profile_path?`<img alt="" src="https://image.tmdb.org/t/p/w185${x.profile_path}">`:''}<span>${esc(x.name)}<br><small class="mute">${x.known_for_department==='Directing'?'Director':'Actor'}</small></span></button>`).join('');
@@ -675,12 +696,14 @@ $('#q').addEventListener('input',()=>{
 async function suggest(q){
   const seq=++sugSeq;
   try{
-    const [r,cr]=await Promise.all([api('/search/multi',{query:q,include_adult:false}),api('/search/collection',{query:q}).catch(()=>({results:[]}))]);
+    const tv=kind==='tv';
+    const [r,cr]=await Promise.all([tv?api('/search/tv',{query:q,include_adult:false}).then(norm):api('/search/multi',{query:q,include_adult:false}),tv?{results:[]}:api('/search/collection',{query:q}).catch(()=>({results:[]}))]);
     if(seq!==sugSeq) return;
-    sugItems=[...cr.results.slice(0,2).map(c=>({...c,media_type:'collection'})),...r.results.filter(x=>x.media_type==='movie'||(x.media_type==='person'&&['Acting','Directing'].includes(x.known_for_department)))].slice(0,9);
+    if(tv) sugItems=r.results.slice(0,9).map(x=>({...x,media_type:'tv'}));
+    else sugItems=[...cr.results.slice(0,2).map(c=>({...c,media_type:'collection'})),...r.results.filter(x=>x.media_type==='movie'||(x.media_type==='person'&&['Acting','Directing'].includes(x.known_for_department)))].slice(0,9);
     sugIdx=-1;
-    $('#sug').innerHTML=sugItems.map((x,i)=>x.media_type==='collection'?`<div class="s-item" data-i="${i}">${x.poster_path?`<img alt="" src="https://image.tmdb.org/t/p/w92${x.poster_path}">`:'<img alt="">'}<span>${esc(x.name.replace(/ Collection$/,''))}<small>Franchise</small></span></div>`:x.media_type==='movie'
-      ?`<div class="s-item" data-i="${i}">${x.poster_path?`<img alt="" src="https://image.tmdb.org/t/p/w92${x.poster_path}">`:'<img alt="">'}<span>${esc(x.title)}<small>Movie${yr(x)?' · '+yr(x):''}</small></span></div>`
+    $('#sug').innerHTML=sugItems.map((x,i)=>x.media_type==='collection'?`<div class="s-item" data-i="${i}">${x.poster_path?`<img alt="" src="https://image.tmdb.org/t/p/w92${x.poster_path}">`:'<img alt="">'}<span>${esc(x.name.replace(/ Collection$/,''))}<small>Franchise</small></span></div>`:x.media_type==='movie'||x.media_type==='tv'
+      ?`<div class="s-item" data-i="${i}">${x.poster_path?`<img alt="" src="https://image.tmdb.org/t/p/w92${x.poster_path}">`:'<img alt="">'}<span>${esc(x.title)}<small>${x.media_type==='tv'?'Series':'Movie'}${yr(x)?' · '+yr(x):''}</small></span></div>`
       :`<div class="s-item person" data-i="${i}">${x.profile_path?`<img alt="" src="https://image.tmdb.org/t/p/w185${x.profile_path}">`:'<img alt="">'}<span>${esc(x.name)}<small>${x.known_for_department==='Directing'?'Director':'Actor'}</small></span></div>`).join('');
     $('#sug').style.display=sugItems.length?'block':'none';
   }catch{}
@@ -689,7 +712,7 @@ function pickSug(i){
   const x=sugItems[i]; if(!x) return;
   hideSug(); $('#q').blur();
   if(x.media_type==='collection') goFranchise(x.id,x.name);
-  else if(x.media_type==='movie') openModal(x.id);
+  else if(x.media_type==='movie'||x.media_type==='tv') openModal(x.id);
   else goPerson(x.id,x.name,x.known_for_department==='Directing'?'crew':'cast');
 }
 let sugDown=false;   // a finger/mouse is on the list: don't let the input's blur close it before the tap lands
@@ -1097,6 +1120,24 @@ function exportSeen(){
   const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='seen.csv';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);
 }
 
+/* ---------- movies / series switch ---------- */
+const MOVIE_ONLY=['actors','directors','franchises','friend'];
+function syncKindUI(){
+  document.querySelectorAll('#kindSw button').forEach(b=>b.classList.toggle('on',b.dataset.kind===kind));
+  MOVIE_ONLY.forEach(t=>{const b=document.querySelector(`#nav [data-tab="${t}"]`); if(b) b.style.display=kind==='tv'?'none':''});
+  $('#q').placeholder=kind==='tv'?'Search series…':'Search title, actor, director…';
+}
+async function setKind(k){
+  if(k===kind) return;
+  kind=k; save('kind',kind);
+  filters.genre=''; filters.runtime=''; save('filters',filters);   // genre ids and length options differ between movies and series
+  topCache=null; hideSug(); syncKindUI();
+  try{await loadGenres()}catch{}
+  go(tab==='search'?{k:'tab',t:'search',q:lastQ}:{k:'tab',t:MOVIE_ONLY.includes(tab)&&k==='tv'?'discover':tab});
+}
+document.querySelectorAll('#kindSw button').forEach(b=>b.onclick=()=>setKind(b.dataset.kind));
+syncKindUI();
+
 /* ---------- boot ---------- */
 function closeDD(except){document.querySelectorAll('.dd.open').forEach(d=>{if(d!==except)d.classList.remove('open')})}
 $('#menuBtn').onclick=e=>{e.stopPropagation();const d=$('#navDD');closeDD(d);d.classList.toggle('open')};
@@ -1105,7 +1146,7 @@ document.addEventListener('click',e=>{if(!e.target.closest('.dd')) closeDD()});
 document.addEventListener('keydown',e=>{if(e.key==='Escape') closeDD()});
 document.querySelectorAll('#nav button').forEach(b=>b.onclick=()=>{closeDD();go({k:'tab',t:b.dataset.tab})});
 (async()=>{
-  if(cfg.key){await loadProviders(false); try{if(!genres.length) genres=(await api('/genre/movie/list')).genres}catch{}}
+  if(cfg.key){await loadProviders(false); try{await loadGenres()}catch{}}
   const start={k:'tab',t:cfg.key?'discover':'settings'};
   history.replaceState({v:start,y:0},'');
   render(start);
