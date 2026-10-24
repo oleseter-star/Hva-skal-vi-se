@@ -20,3 +20,6 @@ Copy `index.html` into the cloned repo, commit and push to `main`.
 
 ## Backup
 Settings -> Backup saves your seen, watchlist, not-interested lists, friend data and filter choices to a file (not your TMDB key). Restore it on another device or after clearing browser data. On iPhone the Home Screen app has its own storage, separate from Safari.
+
+## New tab
+TMDB does not say when a film arrives on or leaves a service, so the app keeps its own record: it scans the catalogue of your services (a few MB, at most once a day) and compares it with the previous scan. "Arrived in the past 7 days" fills in from the second scan on. There is no data source for "leaving soon", so there are no countdowns.

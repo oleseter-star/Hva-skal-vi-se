@@ -104,6 +104,7 @@ body.modal-open{overflow:hidden}
     <nav id="nav">
       <button data-tab="discover" class="on">Discover</button>
       <button data-tab="top">Top 100</button>
+      <button data-tab="new">New</button>
       <button data-tab="actors">Actors</button>
       <button data-tab="directors">Directors</button>
       <button data-tab="franchises">Franchises</button>
@@ -184,7 +185,7 @@ function setTab(t){
   tab=t; viewSeq++;
   document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('on',b.dataset.tab===t));
   ({discover:renderDiscover,top:renderTop,lists:renderLists,settings:renderSettings,search:renderSearch,
-    actors:()=>renderPeopleTab('actors'),directors:()=>renderPeopleTab('directors'),franchises:renderFranchises,friend:renderFriend})[t]();
+    actors:()=>renderPeopleTab('actors'),directors:()=>renderPeopleTab('directors'),franchises:renderFranchises,friend:renderFriend,new:renderNew})[t]();
 }
 
 function filterBar(){
@@ -1033,6 +1034,101 @@ function pickFriend(){
   openModal(fList[Math.floor(Math.random()*fList.length)],{again:true,againFn:pickFriend});
 }
 
+/* ---------- New on your services (the app keeps its own record) ---------- */
+// TMDB only says what is available right now, never when a title arrived or when it leaves. So the app scans the
+// catalogue of your services now and then and compares it with the previous scan: ids that were not there before
+// "arrived", ids missing in two scans in a row "left".
+let catalog=LS('catalog',null), scanning=false;
+const DAY=864e5, SCAN_EVERY=20*36e5;
+const ageLabel=ts=>{const d=Math.floor((Date.now()-ts)/DAY);return d<1?'today':d+'d ago'};
+const scanParams=vc=>({watch_region:REGION,with_watch_providers:cfg.providers.join('|'),with_watch_monetization_types:'flatrate',include_adult:false,'vote_count.gte':vc,sort_by:'popularity.desc'});
+async function scanCatalog(onProg){
+  let vc=100, first;
+  for(const v of [100,500,2000]){vc=v; first=await api('/discover/movie',{...scanParams(v),page:1}); if(first.total_pages<=250) break}   // TMDB serves at most 500 pages; stay well inside
+  const total=Math.min(first.total_pages,250), results=[...first.results];
+  let next=2, done=1, fail=0;
+  const worker=async()=>{while(next<=total){const p=next++;
+    try{results.push(...(await api('/discover/movie',{...scanParams(vc),page:p})).results)}catch{fail++}
+    onProg(++done,total)}};
+  await Promise.all([...Array(6)].map(worker));
+  if(fail) throw new Error('Some pages could not be loaded, try again later');   // a partial scan would make films look like they left
+  return {results,vc};
+}
+function applyScan(results,vc){
+  const key=cfg.providers.join(), now=Date.now();
+  if(!catalog||catalog.k!==key||catalog.vc!==vc){   // first scan, or services changed: just remember what is there
+    catalog={k:key,vc,base:now,t:now,ids:{},added:{},gone:{}};
+    results.forEach(m=>{catalog.ids[m.id]=0}); save('catalog',catalog); return 'baseline';
+  }
+  const present=new Set();
+  for(const m of results){
+    present.add(m.id); const miss=catalog.ids[m.id];
+    if(miss===undefined||miss>=2){catalog.added[m.id]={m:slim(m),ts:now};delete catalog.gone[m.id]}
+    catalog.ids[m.id]=0;
+  }
+  for(const id in catalog.ids) if(!present.has(+id)){const n=++catalog.ids[id]; if(n===2) catalog.gone[id]=now; else if(n>40) delete catalog.ids[id]}
+  for(const id in catalog.added) if(now-catalog.added[id].ts>8*DAY) delete catalog.added[id];
+  for(const id in catalog.gone) if(now-catalog.gone[id]>8*DAY) delete catalog.gone[id];
+  catalog.t=now; save('catalog',catalog); return 'updated';
+}
+async function runScan(){
+  if(scanning) return;
+  scanning=true;
+  const showBar=on=>{const b=$('#scanBar'); if(b) b.style.display=on?'inline-block':'none'; const s=$('#scanNow'); if(s) s.disabled=on};
+  showBar(true); const msg=$('#scanMsg'); if(msg) msg.textContent='Scanning…';
+  try{
+    const res=await scanCatalog((d,n)=>{const b=$('#scanBar'); if(b){b.max=n;b.value=d}});
+    const kind=applyScan(res.results,res.vc), m2=$('#scanMsg');
+    if(m2) m2.textContent=kind==='baseline'?`First scan done: ${res.results.length} films noted. New arrivals show up from the next scan on.`:'Scan finished.';
+  }catch(e){toast(e.message); const m2=$('#scanMsg'); if(m2) m2.textContent=''}
+  finally{scanning=false; showBar(false)}
+  if(tab==='new') paintTracked();
+}
+function maybeBackgroundScan(){   // keeps the record continuous without having to open this tab every day
+  if(!cfg.key||!cfg.providers.length||!catalog||catalog.k!==cfg.providers.join()) return;
+  if(scanning||Date.now()-catalog.t<SCAN_EVERY||(navigator.connection&&navigator.connection.saveData)) return;
+  runScan();
+}
+function paintTracked(){
+  const box=$('#nAdded'); if(!box) return;
+  const ok=!!catalog&&catalog.k===cfg.providers.join(), now=Date.now();
+  $('#nIntro').textContent="TMDB only knows what is available right now, not when a film arrives on a service or leaves it. So this page keeps its own record: it scans the catalogue of your services (a few MB, at most once a day) and compares it with the previous scan."
+    +(ok?` Tracking since ${new Date(catalog.base).toLocaleDateString()}, last scan ${new Date(catalog.t).toLocaleString()}. There is no way to know in advance when something will leave.`:' Tracking has not started yet.');
+  const added=ok?Object.entries(catalog.added).filter(([,x])=>now-x.ts<7*DAY).map(([id,x])=>({...x,id:+id})):[];
+  added.sort((a,b)=>(!!want[b.id]-!!want[a.id])||b.ts-a.ts);
+  box.innerHTML=`<div class="section"><h3>Arrived in the past 7 days (${added.length})</h3>`
+    +(added.length?`<div class="mute" style="margin-bottom:10px">Watchlist films first. The badge shows how long ago the app noticed it.</div><div class="grid" id="gNew">${added.map(x=>cardHTML(x.m,ageLabel(x.ts))).join('')}</div>`
+      :`<span class="mute">${ok?'Nothing new detected yet. Check back after the next scan.':'Waiting for the first scan…'}</span>`)+'</div>';
+  const gone=ok?Object.entries(catalog.gone).filter(([id,ts])=>want[id]&&now-ts<7*DAY).map(([id,ts])=>({m:want[id],ts})):[];
+  $('#nGone').innerHTML=gone.length?`<div class="section"><h3>Left your services (from your watchlist) (${gone.length})</h3><div class="mute" style="margin-bottom:10px">Missing from your services in two scans in a row.</div><div class="grid" id="gGone">${gone.map(x=>cardHTML(x.m,'left '+ageLabel(x.ts))).join('')}</div></div>`:'';
+  fillProviders($('#nAdded')); fillProviders($('#nGone'));
+}
+async function loadRecent(vs){
+  try{
+    const iso=d=>d.toISOString().slice(0,10), today=new Date(), from=new Date(Date.now()-90*DAY);
+    const base={watch_region:REGION,with_watch_providers:cfg.providers.join('|'),with_watch_monetization_types:'flatrate',include_adult:false,'vote_count.gte':20,sort_by:'primary_release_date.desc','primary_release_date.gte':iso(from),'primary_release_date.lte':iso(today)};
+    const pages=await Promise.all([1,2].map(p=>api('/discover/movie',{...base,page:p})));
+    if(vs!==viewSeq) return;
+    const list=pages.flatMap(r=>r.results);
+    $('#grid').innerHTML=list.map(m=>cardHTML(m,Math.max(0,Math.floor((Date.now()-new Date(m.release_date))/DAY))+'d')).join('')||'<span class="mute">Nothing found.</span>';
+    fillProviders($('#grid'));
+  }catch(e){toast(e.message)}
+}
+async function renderNew(){
+  if(!ready()) return;
+  const vs=++viewSeq;
+  $('#main').innerHTML=`<div class="section"><h3>New on your services</h3><div class="mute" id="nIntro"></div>
+      <p><button id="scanNow">Scan now</button> <progress id="scanBar" value="0" max="1" style="display:none;width:200px"></progress> <span id="scanMsg" class="mute"></span></p></div>
+    <div id="nAdded"></div><div id="nGone"></div>
+    <div class="section"><h3>Recent releases now streaming</h3><div class="mute">Films released in the last 90 days that you can already stream free. The badge is the days since release. (By release date, not by when they reached the service.)</div></div>
+    <div class="grid" id="grid"><span class="mute">Loading…</span></div>`;
+  $('#scanNow').onclick=runScan;
+  paintTracked();
+  loadRecent(vs);
+  if(!catalog||catalog.k!==cfg.providers.join()||Date.now()-catalog.t>SCAN_EVERY) runScan();
+  else if(scanning){$('#scanBar').style.display='inline-block';$('#scanNow').disabled=true;$('#scanMsg').textContent='Scanning…'}
+}
+
 /* ---------- Letterboxd import / export ---------- */
 function parseCSV(t){
   const rows=[];let row=[],f='',q=false;
@@ -1069,7 +1165,7 @@ async function importMine(out){
   label.textContent=`Done: ${addedSeen} added to seen, ${addedWant} to watchlist`+(missed.size?`, ${missed.size} couldn't be matched`:'')+'.';
   setTimeout(()=>{if(tab==='lists') renderLists()},2500);
 }
-const BACKUP_PREFS=['friend','fp','filters','sortPrefs','frPrefs','hidePaid','hideNA'];
+const BACKUP_PREFS=['catalog','friend','fp','filters','sortPrefs','frPrefs','hidePaid','hideNA'];
 function buildBackup(){
   const data={app:'hva-skal-vi-se',v:1,saved:new Date().toISOString(),seen,want,skip};
   BACKUP_PREFS.forEach(k=>{const v=LS(k,null); if(v!==null) data[k]=v});
@@ -1109,6 +1205,7 @@ document.querySelectorAll('#nav button').forEach(b=>b.onclick=()=>{closeDD();go(
   const start={k:'tab',t:cfg.key?'discover':'settings'};
   history.replaceState({v:start,y:0},'');
   render(start);
+  setTimeout(maybeBackgroundScan,4000);
 })();
 </script>
 </body>
