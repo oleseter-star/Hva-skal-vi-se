@@ -165,10 +165,19 @@ function discoverParams(extra={}){
   const f=filters, p={watch_region:REGION,with_watch_providers:cfg.providers.join('|'),with_watch_monetization_types:'flatrate',
     include_adult:false,'vote_count.gte':200,'vote_average.gte':f.rating,with_genres:f.genre,'with_runtime.lte':f.runtime,sort_by:f.sort};
   if(f.sort==='primary_release_date.desc') p['vote_count.gte']=50;
-  if(f.decade){const d=+f.decade; if(d===1900){p['primary_release_date.lte']='1979-12-31'} else {p['primary_release_date.gte']=d+'-01-01';p['primary_release_date.lte']=(d+9)+'-12-31'}}
+  if(f.decade&&f.decade[0]==='r'){   // "Last N days": recent releases (they have few votes, so lower the vote floor)
+    const day=ms=>new Date(ms).toISOString().slice(0,10);
+    p['primary_release_date.gte']=day(Date.now()-(+f.decade.slice(1))*864e5); p['primary_release_date.lte']=day(Date.now()); p['vote_count.gte']=20;
+  } else if(f.decade){const d=+f.decade; if(d===1900){p['primary_release_date.lte']='1979-12-31'} else {p['primary_release_date.gte']=d+'-01-01';p['primary_release_date.lte']=(d+9)+'-12-31'}}
   return {...p,...extra};
 }
 const yr=m=>(m.release_date||'').slice(0,4);
+// Discover only: how long ago a film came out, shown when sorting by newest or browsing a "Last …" era.
+function releaseBadge(m){
+  if(!(filters.sort==='primary_release_date.desc'||(filters.decade||'')[0]==='r')||!m.release_date) return 0;
+  const d=Math.floor((Date.now()-new Date(m.release_date))/864e5);
+  return d<0?'upcoming':d<1?'today':d<45?d+'d ago':d<365?Math.round(d/30)+'mo ago':Math.floor(d/365)+'y ago';
+}
 const seenTest=id=>!!seen[id];
 
 /* ---------- rendering ---------- */
@@ -194,7 +203,7 @@ function filterBar(){
    <select id="fGenre">${opt('','Any genre',filters.genre)}${genres.map(g=>opt(g.id,g.name,filters.genre)).join('')}</select>
    <select id="fRating">${[['0','Any rating'],['6','★ 6+'],['6.5','★ 6.5+'],['7','★ 7+'],['7.5','★ 7.5+'],['8','★ 8+']].map(([v,l])=>opt(v,l,filters.rating)).join('')}</select>
    <select id="fRuntime">${[['','Any length'],['100','Under 100 min'],['120','Under 2 h'],['150','Under 2.5 h']].map(([v,l])=>opt(v,l,filters.runtime)).join('')}</select>
-   <select id="fDecade">${[['','Any era'],['2020','2020s'],['2010','2010s'],['2000','2000s'],['1990','1990s'],['1980','1980s'],['1900','Before 1980']].map(([v,l])=>opt(v,l,filters.decade)).join('')}</select>
+   <select id="fDecade">${[['','Any era'],['r90','Last 3 months'],['r365','Last 12 months'],['2020','2020s'],['2010','2010s'],['2000','2000s'],['1990','1990s'],['1980','1980s'],['1900','Before 1980']].map(([v,l])=>opt(v,l,filters.decade)).join('')}</select>
    <select id="fSort">${[['popularity.desc','Popular'],['vote_average.desc','Best rated'],['primary_release_date.desc','Newest'],['primary_release_date.asc','Oldest']].map(([v,l])=>opt(v,l,filters.sort)).join('')}</select>
    <label><input type="checkbox" id="fHide" ${filters.hideSeen?'checked':''}> hide seen</label>
    <label><input type="checkbox" id="fSkip" ${hideSkipOn()?'checked':''}> hide not interested</label></div>`;
@@ -222,7 +231,7 @@ async function loadDiscover(vs){
       if(vs!==viewSeq) return;
       const g=$('#grid'), list=r.results.filter(m=>!(filters.hideSeen&&seenTest(m.id))&&!(hideSkipOn()&&skip[m.id]));
       if(!g.querySelector('.card')) g.innerHTML='';
-      g.insertAdjacentHTML('beforeend',list.map(m=>cardHTML(m)).join(''));
+      g.insertAdjacentHTML('beforeend',list.map(m=>cardHTML(m,releaseBadge(m))).join(''));
       fillProviders(g);
       shown+=list.length; tries++;
       if(discoverPage>r.total_pages){$('#more').style.display='none';break}
@@ -1057,7 +1066,7 @@ async function scanCatalog(onProg){
 function applyScan(results,vc){
   const key=cfg.providers.join(), now=Date.now();
   if(!catalog||catalog.k!==key||catalog.vc!==vc){   // first scan, or services changed: just remember what is there
-    catalog={k:key,vc,base:now,t:now,ids:{},added:{},gone:{}};
+    catalog={k:key,vc,base:now,t:now,ids:{},added:{},gone:{},meta:{}};
     results.forEach(m=>{catalog.ids[m.id]=0}); save('catalog',catalog); return 'baseline';
   }
   const present=new Set();
@@ -1068,7 +1077,7 @@ function applyScan(results,vc){
   }
   for(const id in catalog.ids) if(!present.has(+id)){const n=++catalog.ids[id]; if(n===2) catalog.gone[id]=now; else if(n>40) delete catalog.ids[id]}
   for(const id in catalog.added) if(now-catalog.added[id].ts>8*DAY) delete catalog.added[id];
-  for(const id in catalog.gone) if(now-catalog.gone[id]>8*DAY) delete catalog.gone[id];
+  for(const id in catalog.gone) if(now-catalog.gone[id]>8*DAY){delete catalog.gone[id]; if(catalog.meta) delete catalog.meta[id]}
   catalog.t=now; save('catalog',catalog); return 'updated';
 }
 async function runScan(){
@@ -1089,42 +1098,54 @@ function maybeBackgroundScan(){   // keeps the record continuous without having 
   if(scanning||Date.now()-catalog.t<SCAN_EVERY||(navigator.connection&&navigator.connection.saveData)) return;
   runScan();
 }
-function paintTracked(){
-  const box=$('#nAdded'); if(!box) return;
-  const ok=!!catalog&&catalog.k===cfg.providers.join(), now=Date.now();
-  $('#nIntro').textContent="TMDB only knows what is available right now, not when a film arrives on a service or leaves it. So this page keeps its own record: it scans the catalogue of your services (a few MB, at most once a day) and compares it with the previous scan."
-    +(ok?` Tracking since ${new Date(catalog.base).toLocaleDateString()}, last scan ${new Date(catalog.t).toLocaleString()}. There is no way to know in advance when something will leave.`:' Tracking has not started yet.');
-  const added=ok?Object.entries(catalog.added).filter(([,x])=>now-x.ts<7*DAY).map(([id,x])=>({...x,id:+id})):[];
-  added.sort((a,b)=>(!!want[b.id]-!!want[a.id])||b.ts-a.ts);
-  box.innerHTML=`<div class="section"><h3>Arrived in the past 7 days (${added.length})</h3>`
-    +(added.length?`<div class="mute" style="margin-bottom:10px">Watchlist films first. The badge shows how long ago the app noticed it.</div><div class="grid" id="gNew">${added.map(x=>cardHTML(x.m,ageLabel(x.ts))).join('')}</div>`
-      :`<span class="mute">${ok?'Nothing new detected yet. Check back after the next scan.':'Waiting for the first scan…'}</span>`)+'</div>';
-  const gone=ok?Object.entries(catalog.gone).filter(([id,ts])=>want[id]&&now-ts<7*DAY).map(([id,ts])=>({m:want[id],ts})):[];
-  $('#nGone').innerHTML=gone.length?`<div class="section"><h3>Left your services (from your watchlist) (${gone.length})</h3><div class="mute" style="margin-bottom:10px">Missing from your services in two scans in a row.</div><div class="grid" id="gGone">${gone.map(x=>cardHTML(x.m,'left '+ageLabel(x.ts))).join('')}</div></div>`:'';
-  fillProviders($('#nAdded')); fillProviders($('#nGone'));
+const newLimit={added:60,gone:60};
+let paintSeq=0;
+// Title details for films that left (we only keep ids for the whole catalogue), fetched once and remembered.
+async function loadGoneMeta(ids){
+  catalog.meta=catalog.meta||{};
+  const need=ids.filter(id=>!catalog.meta[id]); let i=0;
+  const worker=async()=>{while(i<need.length){const id=need[i++];try{catalog.meta[id]=slim(await api('/movie/'+id))}catch{}}};
+  await Promise.all([...Array(6)].map(worker));
+  if(need.length) save('catalog',catalog);
 }
-async function loadRecent(vs){
-  try{
-    const iso=d=>d.toISOString().slice(0,10), today=new Date(), from=new Date(Date.now()-90*DAY);
-    const base={watch_region:REGION,with_watch_providers:cfg.providers.join('|'),with_watch_monetization_types:'flatrate',include_adult:false,'vote_count.gte':20,sort_by:'primary_release_date.desc','primary_release_date.gte':iso(from),'primary_release_date.lte':iso(today)};
-    const pages=await Promise.all([1,2].map(p=>api('/discover/movie',{...base,page:p})));
-    if(vs!==viewSeq) return;
-    const list=pages.flatMap(r=>r.results);
-    $('#grid').innerHTML=list.map(m=>cardHTML(m,Math.max(0,Math.floor((Date.now()-new Date(m.release_date))/DAY))+'d')).join('')||'<span class="mute">Nothing found.</span>';
-    fillProviders($('#grid'));
-  }catch(e){toast(e.message)}
+async function paintTracked(){
+  if(!$('#nAdded')) return;
+  const ps=++paintSeq, vs=viewSeq, now=Date.now(), ok=!!catalog&&catalog.k===cfg.providers.join();
+  $('#nIntro').textContent="TMDB can't say when a film arrives on a service or leaves it, so this page keeps its own record: it scans the catalogue of your services (a few MB, at most once a day) and compares it with the previous scan. A film that wasn't there before counts as new."
+    +(ok?` Tracking since ${new Date(catalog.base).toLocaleDateString()}, last scan ${new Date(catalog.t).toLocaleString()}.`:' Tracking has not started yet.');
+  const keep=m=>!(filters.hideSeen&&seen[m.id])&&!(hideSkipOn()&&skip[m.id]);
+  const byWant=(a,b)=>(!!want[b.m.id]-!!want[a.m.id])||b.ts-a.ts;
+  const section=(key,id,title,note,items,label,empty)=>{
+    const n=newLimit[key];
+    return `<div class="section"><h3>${title} (${items.length})</h3>`
+      +(items.length?`<div class="mute" style="margin-bottom:10px">${note}</div><div class="grid" id="${id}">${items.slice(0,n).map(x=>cardHTML(x.m,label(x.ts))).join('')}</div>${items.length>n?`<p><button data-nmore="${key}">Show more (${items.length-n} left)</button></p>`:''}`:`<span class="mute">${empty}</span>`)+'</div>';
+  };
+  const bindMore=()=>document.querySelectorAll('[data-nmore]').forEach(b=>b.onclick=()=>{newLimit[b.dataset.nmore]+=60;paintTracked()});
+  const added=(ok?Object.entries(catalog.added).filter(([,x])=>now-x.ts<7*DAY).map(([id,x])=>({m:x.m,ts:x.ts})):[]).filter(x=>keep(x.m)).sort(byWant);
+  $('#nAdded').innerHTML=section('added','gNew','Arrived in the past 7 days','Watchlist films first. The badge shows how many days ago the app noticed it.',added,ageLabel,ok?'Nothing new detected yet. Check back after the next scan.':'Waiting for the first scan…');
+  fillProviders($('#nAdded')); bindMore();
+  const goneIds=ok?Object.entries(catalog.gone).filter(([,ts])=>now-ts<7*DAY).sort((a,b)=>b[1]-a[1]).slice(0,150):[];
+  if(goneIds.length){
+    $('#nGone').innerHTML='<div class="section"><h3>Left your services</h3><span class="mute">Loading…</span></div>';
+    await loadGoneMeta(goneIds.map(([id])=>id));
+    if(ps!==paintSeq||vs!==viewSeq||!$('#nGone')) return;
+  }
+  const gone=goneIds.filter(([id])=>catalog.meta&&catalog.meta[id]).map(([id,ts])=>({m:catalog.meta[id],ts})).filter(x=>keep(x.m)).sort(byWant);
+  $('#nGone').innerHTML=section('gone','gGone','Left your services','No longer listed on any of your services in two scans in a row. The badge shows how many days ago the app noticed it.',gone,ts=>'left '+ageLabel(ts),ok?'Nothing has left yet.':'');
+  fillProviders($('#nGone')); bindMore();
 }
 async function renderNew(){
   if(!ready()) return;
-  const vs=++viewSeq;
+  ++viewSeq;
   $('#main').innerHTML=`<div class="section"><h3>New on your services</h3><div class="mute" id="nIntro"></div>
       <p><button id="scanNow">Scan now</button> <progress id="scanBar" value="0" max="1" style="display:none;width:200px"></progress> <span id="scanMsg" class="mute"></span></p></div>
-    <div id="nAdded"></div><div id="nGone"></div>
-    <div class="section"><h3>Recent releases now streaming</h3><div class="mute">Films released in the last 90 days that you can already stream free. The badge is the days since release. (By release date, not by when they reached the service.)</div></div>
-    <div class="grid" id="grid"><span class="mute">Loading…</span></div>`;
+    <div class="bar"><label><input type="checkbox" id="nSeen" ${filters.hideSeen?'checked':''}> hide seen</label>
+      <label><input type="checkbox" id="nSkip" ${hideSkipOn()?'checked':''}> hide not interested</label></div>
+    <div id="nAdded"></div><div id="nGone"></div>`;
   $('#scanNow').onclick=runScan;
+  $('#nSeen').onchange=e=>{filters.hideSeen=e.target.checked;save('filters',filters);paintTracked()};
+  $('#nSkip').onchange=e=>{filters.hideSkip=e.target.checked;save('filters',filters);paintTracked()};
   paintTracked();
-  loadRecent(vs);
   if(!catalog||catalog.k!==cfg.providers.join()||Date.now()-catalog.t>SCAN_EVERY) runScan();
   else if(scanning){$('#scanBar').style.display='inline-block';$('#scanNow').disabled=true;$('#scanMsg').textContent='Scanning…'}
 }
